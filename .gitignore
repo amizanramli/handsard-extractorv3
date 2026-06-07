@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.env
+.venv/
+venv/
+*.pdf
+.DS_Store
+.streamlit/secrets.toml
+
+# Keep roster Excel files in the repo — they are reference data, not outputs
+# Exclude any user-generated exports
+hansard_export*.xlsx
+hansard_export*.json
+hansard_combined.json
