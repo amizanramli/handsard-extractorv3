@@ -358,6 +358,8 @@ def build_minister_lookup(
     VERSION_ORDER = {'original': 0, 'first_reshuffle': 1, 'final_reshuffle': 2}
     all_records.sort(key=lambda r: VERSION_ORDER.get(r['cabinet_version'], 0))
 
+    lookup, nobin_lookup, tokens_index, first_index = {}, {}, {}, {}
+
     for rec in all_records:
         raw = rec['raw']
         key     = _normalise_key(raw)
