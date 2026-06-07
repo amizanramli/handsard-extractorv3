@@ -420,11 +420,15 @@ def lookup_minister(pdf_name: str, indexes: dict):
     Returns (entry_dict, method_string) or (None, None).
 
     Match strategies (in order):
-      1. exact       — normalised key with bin/binti
-      2. nobin       — key with bin/binti stripped (for informal before-reshuffle names)
-      3. binti_norm  — strip BINTI from both sides (women's name variants)
-      4. last_token  — unambiguous family-name suffix
-      5. first_token — unambiguous given-name
+      1. exact         — normalised key with bin/binti
+      2. nobin         — key with bin/binti stripped (informal name lists)
+      3. binti_norm    — strip BINTI from both sides (women's name variants)
+      4. last_token    — unambiguous family-name suffix (unique person across ALL rosters)
+
+    NOTE: first_token strategy is intentionally excluded for minister lookup.
+    Common Malay/Chinese first words (MOHD, LIM, AHMAD, NGA, etc.) appear in the
+    roster for multiple distinct people, so a first-token match is not reliable.
+    Only last_token is used, and only when it resolves to exactly one unique person.
     """
     if not indexes:
         return None, None
@@ -432,7 +436,6 @@ def lookup_minister(pdf_name: str, indexes: dict):
     lookup       = indexes.get('lookup', {})
     nobin_lookup = indexes.get('nobin_lookup', {})
     tokens_index = indexes.get('tokens', {})
-    first_index  = indexes.get('first', {})
 
     k    = _normalise_key(pdf_name)
     k_nb = _nobin_key(k)
@@ -443,20 +446,20 @@ def lookup_minister(pdf_name: str, indexes: dict):
     if k_nb in nobin_lookup:
         return nobin_lookup[k_nb], 'nobin'
 
-    # BINTI-normalised
+    # BINTI-normalised (women whose name differs between PDF and roster)
     k_binti = re.sub(r'\bBINTI\b\s*', '', k).strip()
     for lk, entry in lookup.items():
         if re.sub(r'\bBINTI\b\s*', '', lk).strip() == k_binti and k_binti:
             return entry, 'binti_normalised'
 
+    # last_token: only match when it resolves to exactly ONE unique person
+    # (deduplicate across roster versions — same person in before+after = still 1 unique)
     tokens = k.split()
     if tokens:
         cands = tokens_index.get(tokens[-1], [])
-        if len(cands) == 1:
-            return cands[0][1], 'last_token'
-        cands = first_index.get(tokens[0], [])
-        if len(cands) == 1:
-            return cands[0][1], 'first_token'
+        unique_entries = {id(e): e for _, e in cands}
+        if len(unique_entries) == 1:
+            return next(iter(unique_entries.values())), 'last_token'
 
     return None, None
 
