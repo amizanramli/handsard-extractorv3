@@ -374,6 +374,7 @@ def build_minister_lookup(
             'is_deputy'       : rec['is_deputy'],
             'is_senator'      : rec['is_senator'],
             'cabinet_version' : rec['cabinet_version'],
+            'constituency'    : rec.get('constituency', ''),
             'clean_name'      : _strip_titles(raw).title(),
         }
 
