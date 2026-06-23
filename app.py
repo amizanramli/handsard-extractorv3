@@ -1025,7 +1025,30 @@ if uploaded_files:
                     # ── Preview (combined, filtered) ──────────────────────────
                     st.subheader("Data Preview")
                     st.dataframe(
-                        view_df[DISPLAY_COLS], width="stretch", height=420
+                        view_df[DISPLAY_COLS],
+                        width="stretch",
+                        height=420,
+                        column_config={
+                            "Speech": st.column_config.TextColumn(
+                                "Speech",
+                                width="large",
+                            ),
+                            "Speaker": st.column_config.TextColumn(
+                                "Speaker", width="medium"
+                            ),
+                            "Normalized_Speaker": st.column_config.TextColumn(
+                                "Normalized Speaker", width="medium"
+                            ),
+                            "Role": st.column_config.TextColumn(
+                                "Role", width="medium"
+                            ),
+                            "Portfolio": st.column_config.TextColumn(
+                                "Portfolio", width="medium"
+                            ),
+                            "Kementerian": st.column_config.TextColumn(
+                                "Kementerian", width="medium"
+                            ),
+                        },
                     )
 
                     # ── Export ────────────────────────────────────────────────
