@@ -169,6 +169,35 @@ def build_mp_lookup(excel_bytes: bytes) -> dict:
     return {'lookup': lookup, 'tokens': tokens_index, 'first': first_index}
 
 
+def _unique_people(cands: list) -> dict:
+    """
+    Given a list of (key, entry) candidates from a token index, return a dict of
+    unique people keyed by their nobin key.
+
+    This collapses duplicate entries that arise from the same person appearing in
+    multiple rosters under slightly different name forms:
+        'Anwar bin Ibrahim'  (nobin → 'ANWAR IBRAHIM')
+        'Anwar Ibrahim'      (nobin → 'ANWAR IBRAHIM')
+    → treated as 1 unique person, not 2.
+
+    But:
+        'Dzulkefly bin Ahmad'   (nobin → 'DZULKEFLY AHMAD')
+        'Nik Nazmi bin Nik Ahmad' (nobin → 'NIK NAZMI NIK AHMAD')
+        'Noraini binti Ahmad'   (nobin → 'NORAINI AHMAD')
+    → 3 distinct nobin keys → 3 unique people → token is ambiguous, no match.
+    """
+    seen: dict[str, tuple] = {}
+    for key, entry in cands:
+        # Compute nobin key of the roster entry key
+        nb = re.sub(r'\bBIN\b\s*', '', key)
+        nb = re.sub(r'\bBINTI\b\s*', '', nb)
+        nb = re.sub(r'\bHAJI\b\s*', '', nb)
+        nb = re.sub(r'\s+', ' ', nb).strip()
+        if nb not in seen:
+            seen[nb] = (key, entry)
+    return seen
+
+
 def lookup_mp(pdf_name: str, indexes: dict):
     if not indexes:
         return None, None
@@ -178,6 +207,7 @@ def lookup_mp(pdf_name: str, indexes: dict):
     if k in lookup:
         return lookup[k], 'exact'
 
+    # BINTI-normalised (women's name variants)
     k_nb = re.sub(r'\bBINTI\b\s*', '', k).strip()
     for lk, entry in lookup.items():
         if re.sub(r'\bBINTI\b\s*', '', lk).strip() == k_nb and k_nb:
@@ -185,12 +215,15 @@ def lookup_mp(pdf_name: str, indexes: dict):
 
     tokens = k.split()
     if tokens:
-        cands = tokens_index.get(tokens[-1], [])
-        if len(cands) == 1:
-            return cands[0][1], 'last_token'
-        cands = first_index.get(tokens[0], [])
-        if len(cands) == 1:
-            return cands[0][1], 'first_token'
+        # last_token: unambiguous only when all candidates resolve to 1 unique person
+        unique = _unique_people(tokens_index.get(tokens[-1], []))
+        if len(unique) == 1:
+            return next(iter(unique.values()))[1], 'last_token'
+        # first_token: same deduplication
+        unique = _unique_people(first_index.get(tokens[0], []))
+        if len(unique) == 1:
+            return next(iter(unique.values()))[1], 'first_token'
+
     return None, None
 
 
@@ -453,13 +486,14 @@ def lookup_minister(pdf_name: str, indexes: dict):
             return entry, 'binti_normalised'
 
     # last_token: only match when it resolves to exactly ONE unique person
-    # (deduplicate across roster versions — same person in before+after = still 1 unique)
+    # Deduplicate by nobin key — same person with/without bin/binti = 1 unique person.
+    # Different people sharing a last token (e.g. Ahmad → Dzulkefly, Nik Nazmi, Noraini)
+    # have different nobin keys and correctly count as multiple → no match.
     tokens = k.split()
     if tokens:
-        cands = tokens_index.get(tokens[-1], [])
-        unique_entries = {id(e): e for _, e in cands}
-        if len(unique_entries) == 1:
-            return next(iter(unique_entries.values())), 'last_token'
+        unique = _unique_people(tokens_index.get(tokens[-1], []))
+        if len(unique) == 1:
+            return next(iter(unique.values()))[1], 'last_token'
 
     return None, None
 
@@ -737,9 +771,9 @@ def process_hansard_pdf(
 # ============================================================
 
 # Honorific prefixes stripped from speaker names to produce Normalized_Speaker.
-# Listed longest-first within each group; the function strips from the START only.
+# Order matters — longest/most-specific first so compound titles match before
+# their shorter components (e.g. 'Datuk Seri' before 'Datuk').
 _NORMALIZE_TITLES = [
-    # Compound — must come before single-word versions
     'Yang Berhormat ', 'Yang Amat Berhormat ',
     "Dato' Seri Diraja ", "Dato\u2019 Seri Diraja ",
     "Dato' Seri ", "Dato' Sri ",
@@ -752,12 +786,11 @@ _NORMALIZE_TITLES = [
     "Dato' ", "Dato\u2019 ", "Dato\u2018 ",
     'Datuk ', 'Tan Sri ', 'Tun ',
     'Tuan Haji ', 'Puan Hajjah ', 'Puan Hajah ',
-    # Single-word — applied ONLY at start (see normalize_speakers below)
-    'Wira', 'Indera',
-    'Dr.', 'Ir.', 'Ts.',
-    'Tuan', 'Puan',
-    'Haji', 'Hajjah', 'Hajah',
-    'Panglima',
+    'Dr. ', 'Ir. ', 'Ts. ',
+    'Tuan ', 'Puan ',
+    'Haji ', 'Hajjah ', 'Hajah ',
+    'Wira ', 'Indera ',
+    'Panglima ',
 ]
 
 # Speakers whose full name IS a procedural title — leave Normalized_Speaker as-is.
@@ -773,15 +806,12 @@ _TITLE_ONLY_SPEAKERS = {
 
 def normalize_speakers(transcript: list) -> list:
     """
-    Populate Normalized_Speaker for every entry by stripping leading honorific
-    prefixes from Speaker.
+    Strip leading honorific prefixes from Speaker to produce Normalized_Speaker.
 
-    Key design constraints:
-    - Strip only from the START of the string, never mid-string.
-      'Tuan Ibrahim bin Tuan Man' → 'Ibrahim bin Tuan Man'  (second Tuan preserved)
-      'Nethaji Rayer a/l Rajaji' → unchanged  ('haji' inside 'Nethaji' not touched)
-    - Iterate until no more prefixes match (handles stacked titles like 'Puan Hajah X').
-    - Fall back to the original Speaker if stripping would leave an empty string.
+    Strips ONLY from the start of the string — never mid-string — so:
+      'Tuan Ibrahim bin Tuan Man'        → 'Ibrahim bin Tuan Man'   (2nd Tuan kept)
+      'Tuan Sanisvara Nethaji Rayer ...' → 'Sanisvara Nethaji ...'  ('haji' inside untouched)
+      'Puan Hajah Rodziah binti Ismail'  → 'Rodziah binti Ismail'   (stacked titles stripped)
     """
     for entry in transcript:
         raw = entry['Speaker']
@@ -792,24 +822,16 @@ def normalize_speakers(transcript: list) -> list:
 
         clean = raw.strip()
 
-        # Keep stripping from the front until nothing changes
+        # Iteratively strip the longest matching prefix from the front
+        # until no more prefixes match.
         changed = True
         while changed:
             changed = False
             for title in sorted(_NORMALIZE_TITLES, key=len, reverse=True):
-                # Escape and anchor strictly to the start; require trailing space
-                # for multi-char titles without one, or word boundary for single-word
-                if ' ' in title:
-                    pattern = re.compile(r'^' + re.escape(title), re.IGNORECASE)
-                else:
-                    # Single-word title: must be followed by a space (not a letter)
-                    # to avoid 'Wira' hitting 'Wiraswasta', 'Haji' hitting 'Nethaji'
-                    pattern = re.compile(r'^' + re.escape(title) + r'\.?\s+', re.IGNORECASE)
-                new = pattern.sub('', clean).strip()
-                if new != clean:
-                    clean = new
+                if clean.upper().startswith(title.upper()):
+                    clean = clean[len(title):].strip()
                     changed = True
-                    break   # restart from longest title after each change
+                    break  # restart from longest after each strip
 
         entry['Normalized_Speaker'] = clean if clean else raw.strip()
 
