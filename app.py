@@ -687,11 +687,12 @@ def process_hansard_pdf(
                 if block.get('type') != 0:
                     continue
 
-                # ── Reconstruct text, stripping italic spans ─────────────────
-                # Italic text = stage directions & parliamentary notations:
-                # [Tepuk], [Dewan riuh], Point of order, [Mesyuarat ditempohkan],
-                # Bismillahi Rahmani Rahim (when standalone italic), etc.
-                normal_parts = []
+                # ── Reconstruct text from all spans ─────────────────────────
+                # Keep italic, bold and normal spans — formatting is
+                # cosmetic only and does not indicate content to skip.
+                # Bold = speaker name line; italic = Arabic greeting or [Tepuk];
+                # normal = speech body. All are part of the transcript.
+                all_parts = []
                 has_any_text = False
                 for line in block.get('lines', []):
                     line_parts = []
@@ -700,20 +701,14 @@ def process_hansard_pdf(
                         if not raw_span.strip():
                             continue
                         has_any_text = True
-                        is_italic = bool(span['flags'] & 2)
-                        if not is_italic:
-                            line_parts.append(raw_span)
+                        line_parts.append(raw_span)
                     if line_parts:
-                        normal_parts.append(''.join(line_parts))
+                        all_parts.append(''.join(line_parts))
 
                 if not has_any_text:
                     continue
 
-                text = '\n'.join(normal_parts).strip()
-
-                # Block was entirely italic (e.g. [Tepuk], [Kertas-kertas diedarkan])
-                if not text:
-                    continue
+                text = '\n'.join(all_parts).strip()
 
                 # ── Header-only block filter ─────────────────────────────────
                 if _is_header_only_block(text):
