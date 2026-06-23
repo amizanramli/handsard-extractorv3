@@ -648,11 +648,53 @@ def process_hansard_pdf(
         cur_page  = start_idx + 1
 
         for i in range(start_idx, end_idx):
-            for block in doc[i].get_text('blocks'):
-                text = block[4].strip()
+            for block in doc[i].get_text('dict')['blocks']:
+                # Skip image blocks
+                if block.get('type') != 0:
+                    continue
+
+                # ── Reconstruct text, stripping italic spans ─────────────────
+                # Italic text = stage directions & parliamentary notations:
+                # [Tepuk], [Dewan riuh], Point of order, [Mesyuarat ditempohkan],
+                # Bismillahi Rahmani Rahim (when standalone italic), etc.
+                normal_parts = []
+                has_any_text = False
+                for line in block.get('lines', []):
+                    line_parts = []
+                    for span in line.get('spans', []):
+                        raw_span = span['text']
+                        if not raw_span.strip():
+                            continue
+                        has_any_text = True
+                        is_italic = bool(span['flags'] & 2)
+                        if not is_italic:
+                            line_parts.append(raw_span)
+                    if line_parts:
+                        normal_parts.append(''.join(line_parts))
+
+                if not has_any_text:
+                    continue
+
+                text = '\n'.join(normal_parts).strip()
+
+                # Block was entirely italic (e.g. [Tepuk], [Kertas-kertas diedarkan])
                 if not text:
                     continue
+
+                # ── Header-only block filter ─────────────────────────────────
                 if _is_header_only_block(text):
+                    continue
+
+                # ── Indentation filter ───────────────────────────────────────
+                # Body text sits at x0 ≈ 93–110.
+                # Blocks at x0 > 138 are indented stage directions / lists
+                # (e.g. bullet vote counts, ceremony lists, quoted motions).
+                # BUT: if the text starts with a speaker pattern, always parse it —
+                # some rulings and short interjections are indented.
+                block_x0   = block.get('bbox', [0])[0]
+                is_indented = block_x0 > 138
+                looks_like_speaker = bool(SPEAKER_RE.match(text) or UNCLOSED_RE.match(text))
+                if is_indented and not looks_like_speaker:
                     continue
 
                 segments = _split_block_by_speakers(text)
@@ -693,23 +735,84 @@ def process_hansard_pdf(
 # ============================================================
 # Normalize Speaker Names
 # ============================================================
+
+# Honorific prefixes stripped from speaker names to produce Normalized_Speaker.
+# Listed longest-first within each group; the function strips from the START only.
 _NORMALIZE_TITLES = [
+    # Compound — must come before single-word versions
     'Yang Berhormat ', 'Yang Amat Berhormat ',
+    "Dato' Seri Diraja ", "Dato\u2019 Seri Diraja ",
+    "Dato' Seri ", "Dato' Sri ",
     "Dato\u2019 Seri ", "Dato\u2018 Seri ",
-    "Dato' Seri ", "Dato' Sri ", 'Datuk Seri ',
-    'Datuk ', "Dato\u2019 ", "Dato\u2018 ", "Dato' ",
-    'Tan Sri ', 'Tun ',
-    'Dr. ', 'Tuan ', 'Puan ',
-    'Haji ', 'Hajjah ',
-    'Panglima ', 'Ir. ', 'Ts. ',
+    "Dato\u2019 Sri ", "Dato\u2018 Sri ",
+    'Datuk Amar Haji ', 'Datuk Amar ',
+    'Datuk Seri ', 'Datuk Wira ',
+    "Dato' Wira ", "Dato\u2019 Wira ",
+    "Dato' Indera ", "Dato\u2019 Indera ",
+    "Dato' ", "Dato\u2019 ", "Dato\u2018 ",
+    'Datuk ', 'Tan Sri ', 'Tun ',
+    'Tuan Haji ', 'Puan Hajjah ', 'Puan Hajah ',
+    # Single-word — applied ONLY at start (see normalize_speakers below)
+    'Wira', 'Indera',
+    'Dr.', 'Ir.', 'Ts.',
+    'Tuan', 'Puan',
+    'Haji', 'Hajjah', 'Hajah',
+    'Panglima',
 ]
 
-def normalize_speakers(transcript):
+# Speakers whose full name IS a procedural title — leave Normalized_Speaker as-is.
+_TITLE_ONLY_SPEAKERS = {
+    'tuan yang di-pertua',
+    'yang di-pertua',
+    'setiausaha',
+    'beberapa ahli',
+    'seorang ahli',
+    'ahli-ahli',
+}
+
+
+def normalize_speakers(transcript: list) -> list:
+    """
+    Populate Normalized_Speaker for every entry by stripping leading honorific
+    prefixes from Speaker.
+
+    Key design constraints:
+    - Strip only from the START of the string, never mid-string.
+      'Tuan Ibrahim bin Tuan Man' → 'Ibrahim bin Tuan Man'  (second Tuan preserved)
+      'Nethaji Rayer a/l Rajaji' → unchanged  ('haji' inside 'Nethaji' not touched)
+    - Iterate until no more prefixes match (handles stacked titles like 'Puan Hajah X').
+    - Fall back to the original Speaker if stripping would leave an empty string.
+    """
     for entry in transcript:
-        clean = entry['Speaker']
-        for t in _NORMALIZE_TITLES:
-            clean = re.compile(re.escape(t), re.IGNORECASE).sub('', clean)
-        entry['Normalized_Speaker'] = clean.strip()
+        raw = entry['Speaker']
+
+        if raw.lower().strip() in _TITLE_ONLY_SPEAKERS:
+            entry['Normalized_Speaker'] = raw.strip()
+            continue
+
+        clean = raw.strip()
+
+        # Keep stripping from the front until nothing changes
+        changed = True
+        while changed:
+            changed = False
+            for title in sorted(_NORMALIZE_TITLES, key=len, reverse=True):
+                # Escape and anchor strictly to the start; require trailing space
+                # for multi-char titles without one, or word boundary for single-word
+                if ' ' in title:
+                    pattern = re.compile(r'^' + re.escape(title), re.IGNORECASE)
+                else:
+                    # Single-word title: must be followed by a space (not a letter)
+                    # to avoid 'Wira' hitting 'Wiraswasta', 'Haji' hitting 'Nethaji'
+                    pattern = re.compile(r'^' + re.escape(title) + r'\.?\s+', re.IGNORECASE)
+                new = pattern.sub('', clean).strip()
+                if new != clean:
+                    clean = new
+                    changed = True
+                    break   # restart from longest title after each change
+
+        entry['Normalized_Speaker'] = clean if clean else raw.strip()
+
     return transcript
 
 
