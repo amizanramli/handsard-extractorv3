@@ -648,11 +648,53 @@ def process_hansard_pdf(
         cur_page  = start_idx + 1
 
         for i in range(start_idx, end_idx):
-            for block in doc[i].get_text('blocks'):
-                text = block[4].strip()
+            for block in doc[i].get_text('dict')['blocks']:
+                # Skip image blocks
+                if block.get('type') != 0:
+                    continue
+
+                # ── Reconstruct text, stripping italic spans ─────────────────
+                # Italic text = stage directions & parliamentary notations:
+                # [Tepuk], [Dewan riuh], Point of order, [Mesyuarat ditempohkan],
+                # Bismillahi Rahmani Rahim (when standalone italic), etc.
+                normal_parts = []
+                has_any_text = False
+                for line in block.get('lines', []):
+                    line_parts = []
+                    for span in line.get('spans', []):
+                        raw_span = span['text']
+                        if not raw_span.strip():
+                            continue
+                        has_any_text = True
+                        is_italic = bool(span['flags'] & 2)
+                        if not is_italic:
+                            line_parts.append(raw_span)
+                    if line_parts:
+                        normal_parts.append(''.join(line_parts))
+
+                if not has_any_text:
+                    continue
+
+                text = '\n'.join(normal_parts).strip()
+
+                # Block was entirely italic (e.g. [Tepuk], [Kertas-kertas diedarkan])
                 if not text:
                     continue
+
+                # ── Header-only block filter ─────────────────────────────────
                 if _is_header_only_block(text):
+                    continue
+
+                # ── Indentation filter ───────────────────────────────────────
+                # Body text sits at x0 ≈ 93–110.
+                # Blocks at x0 > 138 are indented stage directions / lists
+                # (e.g. bullet vote counts, ceremony lists, quoted motions).
+                # BUT: if the text starts with a speaker pattern, always parse it —
+                # some rulings and short interjections are indented.
+                block_x0   = block.get('bbox', [0])[0]
+                is_indented = block_x0 > 138
+                looks_like_speaker = bool(SPEAKER_RE.match(text) or UNCLOSED_RE.match(text))
+                if is_indented and not looks_like_speaker:
                     continue
 
                 segments = _split_block_by_speakers(text)
@@ -693,23 +735,68 @@ def process_hansard_pdf(
 # ============================================================
 # Normalize Speaker Names
 # ============================================================
+
+# Prefixes stripped from speaker names to produce Normalized_Speaker.
+# IMPORTANT: use word-boundary aware substitution (see normalize_speakers below)
+# to avoid stripping title substrings from mid-word (e.g. 'Haji' inside 'Nethaji').
 _NORMALIZE_TITLES = [
+    # Compound honorifics first (longest match wins)
     'Yang Berhormat ', 'Yang Amat Berhormat ',
+    "Dato' Seri ", "Dato' Sri ",
     "Dato\u2019 Seri ", "Dato\u2018 Seri ",
-    "Dato' Seri ", "Dato' Sri ", 'Datuk Seri ',
-    'Datuk ', "Dato\u2019 ", "Dato\u2018 ", "Dato' ",
-    'Tan Sri ', 'Tun ',
-    'Dr. ', 'Tuan ', 'Puan ',
-    'Haji ', 'Hajjah ',
-    'Panglima ', 'Ir. ', 'Ts. ',
+    "Dato\u2019 Sri ", "Dato\u2018 Sri ",
+    'Datuk Seri ', 'Datuk Amar ',
+    "Dato' Wira ", "Dato\u2019 Wira ",
+    "Dato' Indera ", "Dato\u2019 Indera ",
+    "Dato' ", "Dato\u2019 ", "Dato\u2018 ",
+    'Datuk ', 'Tan Sri ', 'Tun ',
+    # Single-word prefixes — applied with word boundary to avoid mid-word hits
+    'Wira', 'Indera',
+    'Dr.', 'Ir.', 'Ts.',
+    'Tuan', 'Puan',
+    'Haji', 'Hajjah', 'Hajah',
+    'Panglima',
 ]
+
+# Speakers whose full name IS their title (no personal name to extract).
+# normalize_speakers will leave these as-is rather than returning an empty string.
+_TITLE_ONLY_SPEAKERS = {
+    'tuan yang di-pertua',
+    'yang di-pertua',
+    'setiausaha',
+    'beberapa ahli',
+    'seorang ahli',
+    'ahli-ahli',
+}
+
 
 def normalize_speakers(transcript):
     for entry in transcript:
-        clean = entry['Speaker']
-        for t in _NORMALIZE_TITLES:
-            clean = re.compile(re.escape(t), re.IGNORECASE).sub('', clean)
-        entry['Normalized_Speaker'] = clean.strip()
+        raw = entry['Speaker']
+
+        # If this is a title-only speaker, keep as-is
+        if raw.lower().strip() in _TITLE_ONLY_SPEAKERS:
+            entry['Normalized_Speaker'] = raw.strip()
+            continue
+
+        clean = raw
+
+        # Strip compound multi-word prefixes first (simple startswith, case-insensitive)
+        compound = [t for t in _NORMALIZE_TITLES if ' ' in t]
+        for t in sorted(compound, key=len, reverse=True):
+            clean = re.compile(r'(?i)' + re.escape(t)).sub('', clean)
+
+        # Strip single-word prefixes with word boundary to avoid mid-word hits
+        # e.g. 'Haji' must not strip from 'Nethaji'
+        single = [t for t in _NORMALIZE_TITLES if ' ' not in t]
+        for t in sorted(single, key=len, reverse=True):
+            clean = re.compile(r'(?i)\b' + re.escape(t) + r'\.?\s+').sub('', clean)
+
+        clean = clean.strip()
+
+        # If stripping reduced name to empty, fall back to the original
+        entry['Normalized_Speaker'] = clean if clean else raw.strip()
+
     return transcript
 
 
