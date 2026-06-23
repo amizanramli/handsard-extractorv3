@@ -447,21 +447,21 @@ def build_minister_lookup(
     }
 
 
-def lookup_minister(pdf_name: str, indexes: dict):
+def lookup_minister(pdf_name: str, indexes: dict, cabinet_version: str = ''):
     """
     Match a PDF speaker name against the combined minister roster.
     Returns (entry_dict, method_string) or (None, None).
+
+    cabinet_version: if provided (e.g. 'original', 'first_reshuffle', 'final_reshuffle'),
+    only entries whose cabinet_version CONTAINS this value will be returned.
+    This ensures a DR 19.12.2022 Hansard uses the original cabinet positions,
+    not a renamed ministry from a later reshuffle.
 
     Match strategies (in order):
       1. exact         — normalised key with bin/binti
       2. nobin         — key with bin/binti stripped (informal name lists)
       3. binti_norm    — strip BINTI from both sides (women's name variants)
       4. last_token    — unambiguous family-name suffix (unique person across ALL rosters)
-
-    NOTE: first_token strategy is intentionally excluded for minister lookup.
-    Common Malay/Chinese first words (MOHD, LIM, AHMAD, NGA, etc.) appear in the
-    roster for multiple distinct people, so a first-token match is not reliable.
-    Only last_token is used, and only when it resolves to exactly one unique person.
     """
     if not indexes:
         return None, None
@@ -470,28 +470,33 @@ def lookup_minister(pdf_name: str, indexes: dict):
     nobin_lookup = indexes.get('nobin_lookup', {})
     tokens_index = indexes.get('tokens', {})
 
+    def _version_ok(entry: dict) -> bool:
+        """Return True if this entry belongs to the requested cabinet version."""
+        if not cabinet_version:
+            return True
+        return cabinet_version in entry.get('cabinet_version', '').split('+')
+
     k    = _normalise_key(pdf_name)
     k_nb = _nobin_key(k)
 
-    if k in lookup:
+    if k in lookup and _version_ok(lookup[k]):
         return lookup[k], 'exact'
 
-    if k_nb in nobin_lookup:
+    if k_nb in nobin_lookup and _version_ok(nobin_lookup[k_nb]):
         return nobin_lookup[k_nb], 'nobin'
 
     # BINTI-normalised (women whose name differs between PDF and roster)
     k_binti = re.sub(r'\bBINTI\b\s*', '', k).strip()
     for lk, entry in lookup.items():
         if re.sub(r'\bBINTI\b\s*', '', lk).strip() == k_binti and k_binti:
-            return entry, 'binti_normalised'
+            if _version_ok(entry):
+                return entry, 'binti_normalised'
 
     # last_token: only match when it resolves to exactly ONE unique person
-    # Deduplicate by nobin key — same person with/without bin/binti = 1 unique person.
-    # Different people sharing a last token (e.g. Ahmad → Dzulkefly, Nik Nazmi, Noraini)
-    # have different nobin keys and correctly count as multiple → no match.
     tokens = k.split()
     if tokens:
-        unique = _unique_people(tokens_index.get(tokens[-1], []))
+        cands = [(ck, e) for ck, e in tokens_index.get(tokens[-1], []) if _version_ok(e)]
+        unique = _unique_people(cands)
         if len(unique) == 1:
             return next(iter(unique.values()))[1], 'last_token'
 
@@ -609,6 +614,7 @@ def process_hansard_pdf(
     end_page: int,
     mp_indexes: Optional[dict] = None,
     minister_indexes: Optional[dict] = None,
+    cabinet_version: str = '',
 ) -> list:
     transcript: list = []
     pdf_const_lookup: dict[str, str] = {}
@@ -642,7 +648,9 @@ def process_hansard_pdf(
         pdf_const = parsed['constituency']
 
         # ── Minister lookup ────────────────────────────────────────────────
-        min_entry, min_method = lookup_minister(cur_speaker, minister_indexes or {})
+        min_entry, min_method = lookup_minister(
+            cur_speaker, minister_indexes or {}, cabinet_version
+        )
         if min_entry:
             cur_role        = parsed['role'] if parsed['role'] else min_entry['jawatan']
             cur_portfolio   = min_entry['jawatan']
@@ -751,7 +759,9 @@ def process_hansard_pdf(
                 entry['Roster_Match'] = 'backfill'
         # Back-fill minister portfolio for entries where minister was seen later
         if not entry['Portfolio']:
-            min_entry, _ = lookup_minister(entry['Speaker'], minister_indexes or {})
+            min_entry, _ = lookup_minister(
+                entry['Speaker'], minister_indexes or {}, cabinet_version
+            )
             if min_entry:
                 entry['Portfolio']        = min_entry['jawatan']
                 entry['Is_Minister']      = 'Yes'
@@ -950,6 +960,17 @@ if uploaded_files:
                     label=fi["name"] if len(fi["name"]) <= 20 else fi["name"][:18] + "…",
                     value=f"{fi['pages']} pages",
                 )
+                fi["cabinet_version"] = st.selectbox(
+                    "Cabinet",
+                    options=[
+                        ("", "— not specified —"),
+                        ("original",         "Original (19 Dec 2022)"),
+                        ("first_reshuffle",  "After first reshuffle"),
+                        ("final_reshuffle",  "After final reshuffle"),
+                    ],
+                    format_func=lambda x: x[1],
+                    key=f"cab_{fi['stem']}",
+                )[0]
 
         # ── Process ──────────────────────────────────────────────────────────
         if st.button("🚀 Process All Documents", width="stretch"):
@@ -961,7 +982,8 @@ if uploaded_files:
                 for fi in file_infos:
                     try:
                         data = process_hansard_pdf(
-                            fi["bytes"], 1, fi["pages"], mp_indexes, minister_indexes
+                            fi["bytes"], 1, fi["pages"], mp_indexes, minister_indexes,
+                            fi.get("cabinet_version", "")
                         )
                         for item in data:
                             item["Document_Name"] = fi["name"]
