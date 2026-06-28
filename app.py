@@ -559,6 +559,64 @@ with tab1:
 # ==============================================================================
 # TAB 2 — ASSIGN PORTFOLIOS
 # ==============================================================================
+
+# Officials whose title IS their portfolio
+_OFFICIAL_TITLES = {
+    'tuan yang di-pertua'  : 'Tuan Yang di-Pertua',
+    'yang di-pertua'       : 'Yang di-Pertua',
+    'setiausaha'           : 'Setiausaha',
+    'beberapa ahli'        : 'Beberapa Ahli',
+    'seorang ahli'         : 'Seorang Ahli',
+    'ahli-ahli'            : 'Ahli-Ahli',
+}
+
+def _auto_assign_from_roster(
+    norm_name: str,
+    raw_name: str,
+    roster_df: pd.DataFrame,
+) -> dict | None:
+    """
+    Match norm_name against the roster and return an assignment dict,
+    or None if no match.
+    """
+    if roster_df.empty:
+        return None
+
+    # 1. Exact match on normalized name
+    for _, row in roster_df.iterrows():
+        roster_norm = _normalize_speaker(str(row['Nama']))
+        if roster_norm.upper() == norm_name.upper():
+            return {
+                'portfolio'   : f"{row['Jawatan']} — {row['Kementerian']}",
+                'jawatan'     : row['Jawatan'],
+                'kementerian' : row['Kementerian'],
+                'senator'     : str(row.get('Senator', '')),
+                'constituency': str(row.get('Kawasan Parlimen', '')),
+                'confirmed'   : True,
+                'source'      : 'roster',
+            }
+
+    # 2. Normalise bin/binti and retry
+    nb = re.sub(r'\bBINTI?\b\s*', '', norm_name.upper()).strip()
+    for _, row in roster_df.iterrows():
+        roster_nb = re.sub(
+            r'\bBINTI?\b\s*', '',
+            _normalize_speaker(str(row['Nama'])).upper()
+        ).strip()
+        if roster_nb == nb and nb:
+            return {
+                'portfolio'   : f"{row['Jawatan']} — {row['Kementerian']}",
+                'jawatan'     : row['Jawatan'],
+                'kementerian' : row['Kementerian'],
+                'senator'     : str(row.get('Senator', '')),
+                'constituency': str(row.get('Kawasan Parlimen', '')),
+                'confirmed'   : True,
+                'source'      : 'roster_nobin',
+            }
+
+    return None
+
+
 with tab2:
     if "transcript" not in st.session_state:
         st.info("Complete Step ① first to extract speakers.")
@@ -572,10 +630,11 @@ with tab2:
         assignments: dict = st.session_state["assignments"]
 
         # ── Roster upload ──────────────────────────────────────────────────
-        st.subheader("Upload Minister Roster (optional)")
+        st.subheader("Upload Minister Roster")
         st.caption(
-            "Upload any of the three cabinet roster files to auto-suggest portfolios. "
-            "You can change any suggestion manually."
+            "Upload any combination of the three cabinet lists. "
+            "Ministers are auto-matched and confirmed. "
+            "You can edit any row manually."
         )
         roster_cols = st.columns(3)
         roster_dfs = []
@@ -589,75 +648,175 @@ with tab2:
                 if f:
                     roster_dfs.append(load_roster(f.read()))
 
-        # Combine all uploaded rosters into one suggestion table
-        roster_combined = pd.concat(roster_dfs, ignore_index=True) if roster_dfs else pd.DataFrame()
+        roster_combined = (
+            pd.concat(roster_dfs, ignore_index=True)
+            .drop_duplicates(subset=["Nama"])
+            if roster_dfs else pd.DataFrame()
+        )
 
-        # Build portfolio options list from roster
+        # ── Auto-assign on roster load ─────────────────────────────────────
+        if not roster_combined.empty:
+            # Build unique speaker list
+            unique_speakers = (
+                df_all[["Normalized_Speaker", "Speaker"]]
+                .drop_duplicates("Normalized_Speaker")
+            )
+            newly_assigned = 0
+            for _, spk in unique_speakers.iterrows():
+                norm = spk["Normalized_Speaker"]
+                raw  = spk["Speaker"]
+
+                # Skip if already confirmed
+                if assignments.get(norm, {}).get("confirmed"):
+                    continue
+
+                # Officials — title becomes portfolio
+                official_key = norm.lower().strip()
+                if official_key in _OFFICIAL_TITLES:
+                    assignments[norm] = {
+                        "portfolio"   : _OFFICIAL_TITLES[official_key],
+                        "jawatan"     : "",
+                        "kementerian" : "",
+                        "senator"     : "",
+                        "constituency": "",
+                        "confirmed"   : True,
+                        "source"      : "official",
+                        "speaker_raw" : raw,
+                    }
+                    newly_assigned += 1
+                    continue
+
+                # Minister roster match
+                result = _auto_assign_from_roster(norm, raw, roster_combined)
+                if result:
+                    result["speaker_raw"] = raw
+                    assignments[norm] = result
+                    newly_assigned += 1
+
+            if newly_assigned:
+                st.session_state["assignments"] = assignments
+                save_assignments(assignments)
+                st.success(f"Auto-assigned **{newly_assigned}** speakers from roster.")
+
+        # Also auto-assign officials even without a roster
+        else:
+            unique_speakers = (
+                df_all[["Normalized_Speaker", "Speaker"]]
+                .drop_duplicates("Normalized_Speaker")
+            )
+            for _, spk in unique_speakers.iterrows():
+                norm = spk["Normalized_Speaker"]
+                raw  = spk["Speaker"]
+                official_key = norm.lower().strip()
+                if official_key in _OFFICIAL_TITLES and not assignments.get(norm):
+                    assignments[norm] = {
+                        "portfolio"   : _OFFICIAL_TITLES[official_key],
+                        "jawatan"     : "",
+                        "kementerian" : "",
+                        "senator"     : "",
+                        "constituency": "",
+                        "confirmed"   : True,
+                        "source"      : "official",
+                        "speaker_raw" : raw,
+                    }
+
+        # Build portfolio options from roster
         portfolio_options: list[str] = [""]
         if not roster_combined.empty:
             for _, row in roster_combined.iterrows():
-                label_str = f"{row['Jawatan']} — {row['Kementerian']}"
-                if label_str not in portfolio_options:
-                    portfolio_options.append(label_str)
+                opt = f"{row['Jawatan']} — {row['Kementerian']}"
+                if opt not in portfolio_options:
+                    portfolio_options.append(opt)
 
-        # ── Unique speaker table ───────────────────────────────────────────
-        st.subheader("Speaker Assignment Table")
-        st.caption(
-            "Review auto-suggestions and edit as needed. "
-            "Click **Save All Assignments** when done."
+        # ── Speaker assignment table ───────────────────────────────────────
+        st.subheader("Speaker Assignments")
+
+        # Summary counts
+        total_speakers = df_all["Normalized_Speaker"].nunique()
+        confirmed_count = sum(
+            1 for n, a in assignments.items()
+            if a.get("confirmed") and n in df_all["Normalized_Speaker"].values
+        )
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total speakers",     total_speakers)
+        m2.metric("Auto-assigned",      confirmed_count)
+        m3.metric("Needs review",       total_speakers - confirmed_count)
+
+        # Filter toggle
+        show_filter = st.radio(
+            "Show",
+            ["All speakers", "Needs review only", "Confirmed only"],
+            horizontal=True,
         )
 
-        # Build unique speaker summary
+        # Build summary
         speaker_summary = (
             df_all.groupby(["Normalized_Speaker", "Speaker"])
-            .agg(Turns=("Speech", "count"), Documents=("Document", "nunique"))
+            .agg(Turns=("Speech", "count"))
             .reset_index()
             .sort_values("Turns", ascending=False)
         )
 
-        # Auto-suggest from roster for unassigned speakers
-        def _suggest(norm_name: str) -> dict:
-            """Find best roster match for a speaker by normalised name."""
-            if roster_combined.empty:
-                return {}
-            # Strip titles from roster names and compare
-            for _, row in roster_combined.iterrows():
-                roster_norm = _normalize_speaker(row["Nama"])
-                if roster_norm.upper() == norm_name.upper():
-                    return {
-                        "portfolio"    : f"{row['Jawatan']} — {row['Kementerian']}",
-                        "jawatan"      : row["Jawatan"],
-                        "kementerian"  : row["Kementerian"],
-                        "senator"      : row.get("Senator", ""),
-                        "constituency" : row.get("Kawasan Parlimen", ""),
-                        "confirmed"    : False,
-                    }
-            return {}
+        # Apply filter
+        def _needs_review(norm):
+            a = assignments.get(norm, {})
+            return not a.get("confirmed") and not a.get("portfolio")
 
-        # Render assignment rows
+        if show_filter == "Needs review only":
+            speaker_summary = speaker_summary[
+                speaker_summary["Normalized_Speaker"].apply(_needs_review)
+            ]
+        elif show_filter == "Confirmed only":
+            speaker_summary = speaker_summary[
+                ~speaker_summary["Normalized_Speaker"].apply(_needs_review)
+            ]
+
+        st.caption(
+            f"Showing **{len(speaker_summary)}** of **{total_speakers}** speakers. "
+            "Edit any row and click **Save All Assignments**."
+        )
+
+        # Column headers
+        h1, h2, h3, h4 = st.columns([3, 1, 5, 1])
+        h1.markdown("**Speaker**")
+        h2.markdown("**Turns**")
+        h3.markdown("**Portfolio**")
+        h4.markdown("**✓**")
+        st.divider()
+
         updated_assignments = dict(assignments)
-        rows_html = []
 
         for row_idx, (_, spk_row) in enumerate(speaker_summary.iterrows()):
             norm  = spk_row["Normalized_Speaker"]
             raw   = spk_row["Speaker"]
-            turns = spk_row["Turns"]
+            turns = int(spk_row["Turns"])
 
-            current = assignments.get(norm, _suggest(norm))
+            current           = assignments.get(norm, {})
             current_portfolio = current.get("portfolio", "")
             current_confirmed = current.get("confirmed", False)
+            source            = current.get("source", "")
+
+            # Source badge
+            if source == "roster" or source == "roster_nobin":
+                badge = "🟢"    # auto-matched from roster
+            elif source == "official":
+                badge = "🔵"    # official title
+            elif current_portfolio:
+                badge = "✏️"    # manually set
+            else:
+                badge = "⬜"    # unassigned
 
             col_name, col_turns, col_portfolio, col_confirm = st.columns([3, 1, 5, 1])
 
             with col_name:
-                st.markdown(f"**{norm}**")
+                st.markdown(f"{badge} **{norm}**")
                 st.caption(f"{turns} turn{'s' if turns != 1 else ''}")
 
             with col_turns:
-                st.markdown("&nbsp;", unsafe_allow_html=True)
+                st.write("")  # spacer
 
             with col_portfolio:
-                # Selectbox with free-text option
+                # Ensure current value is in options
                 if current_portfolio and current_portfolio not in portfolio_options:
                     options = portfolio_options + [current_portfolio]
                 else:
@@ -671,12 +830,12 @@ with tab2:
                     label_visibility="collapsed",
                 )
 
-                # Free-text override
+                # Free-text override for anything not in roster
                 free_text = st.text_input(
-                    "Or type custom portfolio",
+                    "Custom",
                     value="" if selected else current_portfolio,
                     key=f"txt_{row_idx}",
-                    placeholder="Type if not in list above…",
+                    placeholder="Type if not in dropdown…",
                     label_visibility="collapsed",
                 )
 
@@ -684,56 +843,59 @@ with tab2:
 
             with col_confirm:
                 confirmed = st.checkbox(
-                    "✓", value=current_confirmed, key=f"chk_{row_idx}"
+                    "✓",
+                    value=current_confirmed,
+                    key=f"chk_{row_idx}",
                 )
 
-            # Resolve jawatan/kementerian from final_portfolio string
+            # Resolve jawatan/kementerian
             jawatan = kementerian = senator = constituency = ""
             if final_portfolio:
-                # Try to find in roster
-                for _, row in roster_combined.iterrows() if not roster_combined.empty else []:
-                    label_str = f"{row['Jawatan']} — {row['Kementerian']}"
-                    if label_str == final_portfolio:
-                        jawatan      = row["Jawatan"]
-                        kementerian  = row["Kementerian"]
-                        senator      = row.get("Senator", "")
-                        constituency = row.get("Kawasan Parlimen", "")
+                for _, rrow in roster_combined.iterrows() if not roster_combined.empty else []:
+                    if f"{rrow['Jawatan']} — {rrow['Kementerian']}" == final_portfolio:
+                        jawatan      = rrow["Jawatan"]
+                        kementerian  = rrow["Kementerian"]
+                        senator      = str(rrow.get("Senator", ""))
+                        constituency = str(rrow.get("Kawasan Parlimen", ""))
                         break
-                # Parse from string if not matched
                 if not jawatan and " — " in final_portfolio:
                     parts       = final_portfolio.split(" — ", 1)
                     jawatan     = parts[0].strip()
                     kementerian = parts[1].strip()
 
+            new_source = source if final_portfolio == current_portfolio else "manual"
             updated_assignments[norm] = {
-                "portfolio"    : final_portfolio,
-                "jawatan"      : jawatan,
-                "kementerian"  : kementerian,
-                "senator"      : senator,
-                "constituency" : constituency,
-                "confirmed"    : confirmed,
-                "speaker_raw"  : raw,
+                "portfolio"   : final_portfolio,
+                "jawatan"     : jawatan,
+                "kementerian" : kementerian,
+                "senator"     : senator,
+                "constituency": constituency,
+                "confirmed"   : confirmed,
+                "source"      : new_source,
+                "speaker_raw" : raw,
             }
 
             st.divider()
 
-        # Save button
-        col_save, col_clear = st.columns([2, 1])
+        # Save / Clear
+        col_save, col_clear = st.columns([3, 1])
         with col_save:
             if st.button("💾 Save All Assignments", width="stretch"):
                 st.session_state["assignments"] = updated_assignments
                 save_assignments(updated_assignments)
-                st.success(
-                    f"Saved {sum(1 for a in updated_assignments.values() if a.get('confirmed'))} "
-                    f"confirmed assignments."
-                )
-
+                confirmed_n = sum(1 for a in updated_assignments.values() if a.get("confirmed"))
+                st.success(f"Saved — {confirmed_n} confirmed assignments.")
         with col_clear:
-            if st.button("🗑 Clear Saved", width="stretch"):
+            if st.button("🗑 Clear", width="stretch"):
                 st.session_state["assignments"] = {}
                 if os.path.exists(ASSIGNMENTS_PATH):
                     os.remove(ASSIGNMENTS_PATH)
                 st.rerun()
+
+        st.caption(
+            "🟢 Auto-matched from roster  ·  🔵 Official title  ·  "
+            "✏️ Manually set  ·  ⬜ Unassigned"
+        )
 
 # ==============================================================================
 # TAB 3 — EXPORT
