@@ -638,7 +638,7 @@ with tab2:
         updated_assignments = dict(assignments)
         rows_html = []
 
-        for _, spk_row in speaker_summary.iterrows():
+        for row_idx, (_, spk_row) in enumerate(speaker_summary.iterrows()):
             norm  = spk_row["Normalized_Speaker"]
             raw   = spk_row["Speaker"]
             turns = spk_row["Turns"]
@@ -667,7 +667,7 @@ with tab2:
                     "Portfolio",
                     options=options,
                     index=options.index(current_portfolio) if current_portfolio in options else 0,
-                    key=f"sel_{norm}",
+                    key=f"sel_{row_idx}",
                     label_visibility="collapsed",
                 )
 
@@ -675,7 +675,7 @@ with tab2:
                 free_text = st.text_input(
                     "Or type custom portfolio",
                     value="" if selected else current_portfolio,
-                    key=f"txt_{norm}",
+                    key=f"txt_{row_idx}",
                     placeholder="Type if not in list above…",
                     label_visibility="collapsed",
                 )
@@ -684,7 +684,7 @@ with tab2:
 
             with col_confirm:
                 confirmed = st.checkbox(
-                    "✓", value=current_confirmed, key=f"chk_{norm}"
+                    "✓", value=current_confirmed, key=f"chk_{row_idx}"
                 )
 
             # Resolve jawatan/kementerian from final_portfolio string
