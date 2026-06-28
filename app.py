@@ -3,6 +3,8 @@ import fitz          # PyMuPDF
 import pandas as pd
 import io
 import re
+import json
+import os
 from typing import Optional
 
 # ============================================================
@@ -18,8 +20,7 @@ st.set_page_config(
 # ============================================================
 # Light Theme + Contrast Accents
 # ============================================================
-st.markdown(
-    """
+st.markdown("""
 <style>
 :root {
   --bg:        #f8fafc;
@@ -28,100 +29,88 @@ st.markdown(
   --border:    #e2e8f0;
   --text:      #0f172a;
   --text-mute: #64748b;
-  --accent:    #4f46e5;   /* indigo */
-  --accent-2:  #ec4899;   /* pink */
-  --accent-3:  #0ea5e9;   /* sky */
-  --good:      #059669;
+  --accent:    #4f46e5;
+  --accent-2:  #ec4899;
 }
-
-.stApp           { background-color: var(--bg); color: var(--text); }
-.main            { background-color: var(--bg); }
-section[data-testid="stSidebar"] { background-color: var(--surface) !important;
-                                   border-right: 1px solid var(--border); }
-
+.stApp { background-color: var(--bg); color: var(--text); }
+.main  { background-color: var(--bg); }
+section[data-testid="stSidebar"] {
+    background-color: var(--surface) !important;
+    border-right: 1px solid var(--border);
+}
 h1, h2, h3, h4, h5, h6, p, span, label, div { color: var(--text); }
 .stMarkdown p, .stCaption, [data-testid="stCaptionContainer"] { color: var(--text-mute); }
-
 h1 { text-align: center; margin-bottom: 0.25rem; font-weight: 700; }
 h1 span { background: linear-gradient(135deg, var(--accent), var(--accent-2));
           -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-
 .stAlert { background-color: var(--surface) !important;
            border: 1px solid var(--border) !important;
            color: var(--text) !important;
            border-left: 4px solid var(--accent) !important; }
-
 .stButton>button {
     background: linear-gradient(135deg, var(--accent), var(--accent-2));
-    color: #ffffff;
-    border: none;
-    border-radius: 10px;
-    font-weight: 600;
-    padding: 0.55rem 1.2rem;
+    color: #ffffff; border: none; border-radius: 10px;
+    font-weight: 600; padding: 0.55rem 1.2rem;
     transition: transform .15s ease, box-shadow .15s ease;
 }
 .stButton>button:hover {
     transform: translateY(-1px);
-    box-shadow: 0 8px 18px -6px rgba(79, 70, 229, .55);
+    box-shadow: 0 8px 18px -6px rgba(79,70,229,.55);
 }
 .stDownloadButton>button {
-    background: var(--surface);
-    color: var(--accent);
-    border: 1.5px solid var(--accent);
-    border-radius: 10px;
-    font-weight: 600;
+    background: var(--surface); color: var(--accent);
+    border: 1.5px solid var(--accent); border-radius: 10px; font-weight: 600;
 }
-.stDownloadButton>button:hover {
-    background: var(--accent);
-    color: #ffffff;
-}
-
+.stDownloadButton>button:hover { background: var(--accent); color: #ffffff; }
 [data-testid="stMetricValue"] { color: var(--accent) !important; font-weight: 700; }
 [data-testid="stMetricLabel"] { color: var(--text-mute) !important; }
-
-[data-testid="stFileUploader"] { border-radius: 12px; }
-[data-testid="stTextInput"] input { border-radius: 8px; border: 1.5px solid var(--border); }
-[data-testid="stTextInput"] input:focus { border-color: var(--accent); }
-
 div[data-testid="stDataFrame"] { border: 1px solid var(--border); border-radius: 10px; }
 </style>
-""",
-    unsafe_allow_html=True,
-)
+""", unsafe_allow_html=True)
 
 # ============================================================
-# MP LOOKUP  (loaded from uploaded Excel)
+# Assignments persistence (JSON on disk)
 # ============================================================
+ASSIGNMENTS_PATH = "speaker_assignments.json"
 
+def load_assignments() -> dict:
+    """Load saved speaker→portfolio assignments from disk."""
+    if os.path.exists(ASSIGNMENTS_PATH):
+        try:
+            with open(ASSIGNMENTS_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_assignments(assignments: dict) -> None:
+    """Persist speaker→portfolio assignments to disk."""
+    with open(ASSIGNMENTS_PATH, "w", encoding="utf-8") as f:
+        json.dump(assignments, f, ensure_ascii=False, indent=2)
+
+# ============================================================
+# Name utilities
+# ============================================================
 _STRIP_TITLES = [
     'YAB ', 'YB ',
-    # Senator prefixes — must come before plain DATUK SERI etc.
     "SENATOR DATO' SERI DIRAJA DR. ", "SENATOR DATO' SERI DIRAJA ",
     "SENATOR DATO\u2019 SERI DIRAJA DR. ", "SENATOR DATO\u2019 SERI DIRAJA ",
     'SENATOR DATUK SERI DR. ', 'SENATOR DATUK SERI ',
     'SENATOR DR. ', 'SENATOR ',
-    # Diraja / Utama / Amar
     "DATO' SERI DIRAJA DR. ", "DATO' SERI DIRAJA ",
     "DATO\u2019 SERI DIRAJA DR. ", "DATO\u2019 SERI DIRAJA ",
     "DATO' SERI UTAMA ", "DATO\u2019 SERI UTAMA ",
-    'DATUK AMAR HAJI ', 'DATUK AMAR ',
-    'DATUK TS. ',
-    # Standard Dato/Datuk variants
+    'DATUK AMAR HAJI ', 'DATUK AMAR ', 'DATUK TS. ',
     "DATO' WIRA DR. ", "DATO' WIRA ",
     "DATO' SERI DR. ", "DATO' SERI ", "DATO' SRI DR. ", "DATO' SRI ",
-    "DATO' DR. ",      "DATO' ",
+    "DATO' DR. ", "DATO' ",
     'DATO\u2019 SERI DR. ', 'DATO\u2019 SERI ', 'DATO\u2019 SRI ', 'DATO\u2019 DR. ', 'DATO\u2019 ',
     'DATO\u2018 SERI DR. ', 'DATO\u2018 SERI ', 'DATO\u2018 SRI ', 'DATO\u2018 DR. ', 'DATO\u2018 ',
     'DATO SERI DR. ', 'DATO SERI ', 'DATO SRI DR. ', 'DATO SRI ',
     'DATUK SERI DR. ', 'DATUK SERI ', 'DATUK DR. ', 'DATUK ',
-    'TAN SRI ', 'TUN ',
-    'DR. ', 'DR ',   # 'DR ' (no dot) used in some informal/before-reshuffle lists
-    'IR. ', 'TS. ',
+    'TAN SRI ', 'TUN ', 'DR. ', 'DR ', 'IR. ', 'TS. ',
     'TUAN HAJI ', 'TUAN ', 'PUAN HAJJAH ', 'PUAN ',
-    'HAJI ', 'HAJJAH ', 'HAJAH ',
-    'UTAMA ',
-    'A/P ', 'A/L ',
-    'PANGLIMA ',
+    'HAJI ', 'HAJJAH ', 'HAJAH ', 'UTAMA ', 'A/P ', 'A/L ', 'PANGLIMA ',
 ]
 
 def _strip_titles(name: str) -> str:
@@ -135,649 +124,13 @@ def _strip_titles(name: str) -> str:
                 changed = True
     return n
 
-
 def _normalise_key(name: str) -> str:
     k = _strip_titles(name).upper()
     k = re.sub(r"DATO['\u2019\u2018]\s*(?:SERI\s+|SRI\s+)?", '', k)
     k = re.sub(r'\bBINTE\b', 'BINTI', k)
-    k = re.sub(r'\s+', ' ', k).strip()
-    return k
-
-
-@st.cache_data(show_spinner=False)
-def build_mp_lookup(excel_bytes: bytes) -> dict:
-    df = pd.read_excel(io.BytesIO(excel_bytes))
-    name_col  = next(c for c in df.columns if 'NAMA' in c.upper() or 'NAME' in c.upper())
-    const_col = next(c for c in df.columns if 'KAWASAN' in c.upper() or 'CONST' in c.upper()
-                                                or 'PARLIMEN' in c.upper())
-
-    lookup, tokens_index, first_index = {}, {}, {}
-
-    for _, row in df.iterrows():
-        raw   = str(row[name_col]).strip()
-        const = str(row[const_col]).strip().title()
-        key   = _normalise_key(raw)
-        entry = {'constituency': const, 'clean_name': _strip_titles(raw).title()}
-        lookup[key] = entry
-        tokens = key.split()
-        if tokens:
-            tokens_index.setdefault(tokens[-1], []).append((key, entry))
-            if len(tokens) >= 2:
-                tokens_index.setdefault(' '.join(tokens[-2:]), []).append((key, entry))
-            first_index.setdefault(tokens[0], []).append((key, entry))
-
-    return {'lookup': lookup, 'tokens': tokens_index, 'first': first_index}
-
-
-def _unique_people(cands: list) -> dict:
-    """
-    Given a list of (key, entry) candidates from a token index, return a dict of
-    unique people keyed by their nobin key.
-
-    This collapses duplicate entries that arise from the same person appearing in
-    multiple rosters under slightly different name forms:
-        'Anwar bin Ibrahim'  (nobin → 'ANWAR IBRAHIM')
-        'Anwar Ibrahim'      (nobin → 'ANWAR IBRAHIM')
-    → treated as 1 unique person, not 2.
-
-    But:
-        'Dzulkefly bin Ahmad'   (nobin → 'DZULKEFLY AHMAD')
-        'Nik Nazmi bin Nik Ahmad' (nobin → 'NIK NAZMI NIK AHMAD')
-        'Noraini binti Ahmad'   (nobin → 'NORAINI AHMAD')
-    → 3 distinct nobin keys → 3 unique people → token is ambiguous, no match.
-    """
-    seen: dict[str, tuple] = {}
-    for key, entry in cands:
-        # Compute nobin key of the roster entry key
-        nb = re.sub(r'\bBIN\b\s*', '', key)
-        nb = re.sub(r'\bBINTI\b\s*', '', nb)
-        nb = re.sub(r'\bHAJI\b\s*', '', nb)
-        nb = re.sub(r'\s+', ' ', nb).strip()
-        if nb not in seen:
-            seen[nb] = (key, entry)
-    return seen
-
-
-def lookup_mp(pdf_name: str, indexes: dict):
-    if not indexes:
-        return None, None
-    lookup, tokens_index, first_index = indexes['lookup'], indexes['tokens'], indexes['first']
-
-    k = _normalise_key(pdf_name)
-    if k in lookup:
-        return lookup[k], 'exact'
-
-    # BINTI-normalised (women's name variants)
-    k_nb = re.sub(r'\bBINTI\b\s*', '', k).strip()
-    for lk, entry in lookup.items():
-        if re.sub(r'\bBINTI\b\s*', '', lk).strip() == k_nb and k_nb:
-            return entry, 'binti_normalised'
-
-    tokens = k.split()
-    if tokens:
-        # last_token: unambiguous only when all candidates resolve to 1 unique person
-        unique = _unique_people(tokens_index.get(tokens[-1], []))
-        if len(unique) == 1:
-            return next(iter(unique.values()))[1], 'last_token'
-        # first_token: same deduplication
-        unique = _unique_people(first_index.get(tokens[0], []))
-        if len(unique) == 1:
-            return next(iter(unique.values()))[1], 'first_token'
-
-    return None, None
-
-
-
-# ============================================================
-# MINISTER LOOKUP  (supports before & after reshuffle rosters)
-# ============================================================
-
-def _nobin_key(k: str) -> str:
-    """Strip BIN/BINTI from a normalised key — needed for informal name lists
-    (before-reshuffle) that omit bin/binti from names."""
-    k = re.sub(r'\bBIN\b\s*', '', k)
-    k = re.sub(r'\bBINTI\b\s*', '', k)
     return re.sub(r'\s+', ' ', k).strip()
 
-
-def _parse_minister_file(df: pd.DataFrame, cabinet_version: str) -> list[dict]:
-    """
-    Parse any of three minister Excel formats into a flat list of person dicts.
-
-    Format A — formal (after reshuffle):
-        Columns: Kementerian | Menteri | Timbalan Menteri
-        Names have YAB/YB prefixes and full bin/binti forms.
-
-    Format B — informal (first reshuffle / before reshuffle):
-        Columns: Kementerian/Jabatan | Menteri | Timbalan Menteri
-        Names have partial titles, no bin/binti; some cells have
-        parenthetical notes like "(Timbalan Menteri Kewangan)".
-
-    Format C — original cabinet (parsed from Hansard text):
-        Columns: Jawatan | Nama | Kawasan Parlimen | Is_Deputy
-        One row per person; Jawatan is the full role string.
-    """
-    cols = df.columns.tolist()
-    cols_upper = [c.upper() for c in cols]
-
-    # ── Detect Format C: has 'NAMA' and 'JAWATAN' columns ───────────────────
-    if any('NAMA' in c for c in cols_upper) and any('JAWATAN' in c for c in cols_upper):
-        nama_col       = next(c for c in cols if 'NAMA'       in c.upper())
-        jawatan_col    = next(c for c in cols if 'JAWATAN'    in c.upper())
-        kawasan_col    = next((c for c in cols if 'KAWASAN'   in c.upper()), None)
-        kementerian_col = next((c for c in cols if 'KEMENTERIAN' in c.upper()), None)
-        senator_col    = next((c for c in cols if 'SENATOR'   in c.upper()), None)
-        timbalan_col_c = next((c for c in cols if 'TIMBALAN'  in c.upper()), None)
-
-        records = []
-        for _, row in df.iterrows():
-            raw     = str(row[nama_col]).strip()
-            jawatan = str(row[jawatan_col]).strip()
-            kawasan = str(row.get(kawasan_col, '')).strip() if kawasan_col else ''
-
-            if raw in ('', 'nan') or jawatan in ('', 'nan'):
-                continue
-
-            constituency = '' if kawasan in ('', 'nan', '-', '—') else kawasan.title()
-
-            # Standardised format: Jawatan = 'Menteri' or 'Timbalan Menteri',
-            #                      Kementerian = ministry name separately
-            # Old format: Jawatan = full role string e.g. 'Menteri Pengangkutan'
-            if kementerian_col:
-                # New standardised format
-                ministry   = str(row.get(kementerian_col, '')).strip()
-                is_deputy  = jawatan.lower().strip() == 'timbalan menteri'
-                role_label = 'Timbalan Menteri' if is_deputy else 'Menteri'
-            else:
-                # Old format — jawatan IS the full ministry description
-                ministry   = jawatan
-                is_deputy  = bool(re.match(r'^Timbalan', jawatan, re.IGNORECASE))
-                role_label = 'Timbalan Menteri' if is_deputy else 'Menteri'
-
-            # Senator: check dedicated column first, then fall back to name scan
-            if senator_col:
-                is_senator = str(row.get(senator_col, '')).strip().lower() in ('ya', 'yes', 'true', '1')
-            else:
-                is_senator = 'SENATOR' in raw.upper()
-
-            records.append({
-                'raw'            : raw,
-                'ministry'       : ministry,
-                'role_label'     : role_label,
-                'is_deputy'      : is_deputy,
-                'is_senator'     : is_senator,
-                'constituency'   : constituency,
-                'cabinet_version': cabinet_version,
-            })
-        return records
-
-    # ── Formats A & B: Kementerian | Menteri | Timbalan Menteri ─────────────
-    ministry_col = cols[0]
-    menteri_col  = next((c for c in cols if c.strip() == 'Menteri'), None)
-    timbalan_col = next((c for c in cols if 'Timbalan' in c), None)
-
-    records = []
-    for _, row in df.iterrows():
-        ministry = str(row[ministry_col]).strip()
-        if ministry in ('nan', ''):
-            continue
-
-        for col, role_label, is_deputy in [
-            (menteri_col,  'Menteri',          False),
-            (timbalan_col, 'Timbalan Menteri', True),
-        ]:
-            if col is None:
-                continue
-            raw = str(row.get(col, '')).strip()
-            if raw in ('', 'nan', '-', '—'):
-                continue
-
-            # Strip parenthetical role annotations  e.g. "(Timbalan Menteri Kewangan)"
-            raw = re.sub(r'\(.*?\)', '', raw).strip()
-            if not raw:
-                continue
-
-            is_senator = 'SENATOR' in raw.upper()
-
-            records.append({
-                'raw'            : raw,
-                'ministry'       : ministry,
-                'role_label'     : role_label,
-                'is_deputy'      : is_deputy,
-                'is_senator'     : is_senator,
-                'constituency'   : '',
-                'cabinet_version': cabinet_version,
-            })
-
-    return records
-
-
-@st.cache_data(show_spinner=False)
-def build_minister_lookup(
-    original_bytes: Optional[bytes] = None,
-    before_bytes:   Optional[bytes] = None,
-    after_bytes:    Optional[bytes] = None,
-) -> dict:
-    """
-    Build a unified minister lookup from up to three Excel files:
-      - original_bytes : original cabinet (DR-19122022 Hansard list)
-      - before_bytes   : cabinet before first reshuffle
-      - after_bytes    : cabinet after final reshuffle
-
-    Priority on key collision (highest wins):  after > before > original
-    cabinet_version tracks which roster(s) a person appears in.
-
-    Indexes built:
-      lookup        : normalised_key (with bin)      -> entry
-      nobin_lookup  : normalised_key (without bin)   -> entry
-      tokens_index  : last/suffix tokens             -> [(key, entry)]
-      first_index   : first_token                    -> [(key, entry)]
-    """
-    all_records: list[dict] = []
-
-    if original_bytes:
-        df = pd.read_excel(io.BytesIO(original_bytes))
-        all_records += _parse_minister_file(df, 'original')
-
-    if before_bytes:
-        df = pd.read_excel(io.BytesIO(before_bytes))
-        all_records += _parse_minister_file(df, 'first_reshuffle')
-
-    if after_bytes:
-        df = pd.read_excel(io.BytesIO(after_bytes))
-        all_records += _parse_minister_file(df, 'final_reshuffle')
-
-    # Sort so highest-priority version is processed last (wins on key collision)
-    VERSION_ORDER = {'original': 0, 'first_reshuffle': 1, 'final_reshuffle': 2}
-    all_records.sort(key=lambda r: VERSION_ORDER.get(r['cabinet_version'], 0))
-
-    lookup, nobin_lookup, tokens_index, first_index = {}, {}, {}, {}
-
-    for rec in all_records:
-        raw = rec['raw']
-        key     = _normalise_key(raw)
-        nb_key  = _nobin_key(key)
-
-        jawatan = f"{rec['role_label']} — {rec['ministry']}"
-
-        entry = {
-            'jawatan'         : jawatan,
-            'ministry'        : rec['ministry'],
-            'role_label'      : rec['role_label'],
-            'is_deputy'       : rec['is_deputy'],
-            'is_senator'      : rec['is_senator'],
-            'cabinet_version' : rec['cabinet_version'],
-            'constituency'    : rec.get('constituency', ''),
-            'clean_name'      : _strip_titles(raw).title(),
-        }
-
-        # Track which versions this person appears in
-        existing = lookup.get(key) or nobin_lookup.get(nb_key)
-        if existing and existing['cabinet_version'] != rec['cabinet_version']:
-            # Collect all versions present
-            prev_versions = set(existing['cabinet_version'].split('+'))
-            prev_versions.add(rec['cabinet_version'])
-            combined_ver = '+'.join(sorted(prev_versions, key=lambda v: VERSION_ORDER.get(v, 0)))
-            entry['cabinet_version'] = combined_ver
-            # Update all stored references to the same person
-            for d in (lookup, nobin_lookup):
-                for stored_entry in d.values():
-                    if stored_entry is existing:
-                        stored_entry['cabinet_version'] = combined_ver
-
-        lookup[key]          = entry
-        nobin_lookup[nb_key] = entry
-
-        tokens = key.split()
-        if tokens:
-            tokens_index.setdefault(tokens[-1], []).append((key, entry))
-            if len(tokens) >= 2:
-                tokens_index.setdefault(' '.join(tokens[-2:]), []).append((key, entry))
-                # Index on all-but-first-token to handle English given names
-                # e.g. "ANTHONY LOKE SIEW FOOK" -> also index "LOKE SIEW FOOK"
-                suffix = ' '.join(tokens[1:])
-                tokens_index.setdefault(suffix, []).append((key, entry))
-            first_index.setdefault(tokens[0], []).append((key, entry))
-
-    return {
-        'lookup'      : lookup,
-        'nobin_lookup': nobin_lookup,
-        'tokens'      : tokens_index,
-        'first'       : first_index,
-    }
-
-
-def lookup_minister(pdf_name: str, indexes: dict, cabinet_version: str = ''):
-    """
-    Match a PDF speaker name against the combined minister roster.
-    Returns (entry_dict, method_string) or (None, None).
-
-    cabinet_version: if provided (e.g. 'original', 'first_reshuffle', 'final_reshuffle'),
-    only entries whose cabinet_version CONTAINS this value will be returned.
-    This ensures a DR 19.12.2022 Hansard uses the original cabinet positions,
-    not a renamed ministry from a later reshuffle.
-
-    Match strategies (in order):
-      1. exact         — normalised key with bin/binti
-      2. nobin         — key with bin/binti stripped (informal name lists)
-      3. binti_norm    — strip BINTI from both sides (women's name variants)
-      4. last_token    — unambiguous family-name suffix (unique person across ALL rosters)
-    """
-    if not indexes:
-        return None, None
-
-    lookup       = indexes.get('lookup', {})
-    nobin_lookup = indexes.get('nobin_lookup', {})
-    tokens_index = indexes.get('tokens', {})
-
-    def _version_ok(entry: dict) -> bool:
-        """Return True if this entry belongs to the requested cabinet version."""
-        if not cabinet_version:
-            return True
-        return cabinet_version in entry.get('cabinet_version', '').split('+')
-
-    k    = _normalise_key(pdf_name)
-    k_nb = _nobin_key(k)
-
-    if k in lookup and _version_ok(lookup[k]):
-        return lookup[k], 'exact'
-
-    if k_nb in nobin_lookup and _version_ok(nobin_lookup[k_nb]):
-        return nobin_lookup[k_nb], 'nobin'
-
-    # BINTI-normalised (women whose name differs between PDF and roster)
-    k_binti = re.sub(r'\bBINTI\b\s*', '', k).strip()
-    for lk, entry in lookup.items():
-        if re.sub(r'\bBINTI\b\s*', '', lk).strip() == k_binti and k_binti:
-            if _version_ok(entry):
-                return entry, 'binti_normalised'
-
-    # last_token: only match when it resolves to exactly ONE unique person
-    tokens = k.split()
-    if tokens:
-        cands = [(ck, e) for ck, e in tokens_index.get(tokens[-1], []) if _version_ok(e)]
-        unique = _unique_people(cands)
-        if len(unique) == 1:
-            return next(iter(unique.values()))[1], 'last_token'
-
-    return None, None
-
-
-
-# Character class for speaker names; includes / for Indian "a/l", "a/p" patronymics
-_CHAR = r"[a-zA-Z\s\(\)@\-\'\u2018\u2019\./]"
-
-SPEAKER_RE = re.compile(
-    rf"^([A-Z]{_CHAR}+?)(?:\s*\[([^\]]*)\])?\s*:\s*(.*)",
-    re.MULTILINE | re.DOTALL,
-)
-UNCLOSED_RE = re.compile(
-    rf"^([A-Z]{_CHAR}+?)\s*\[([A-Z]{_CHAR}+?)\s*:\s*(.*)",
-    re.MULTILINE | re.DOTALL,
-)
-# Detects a speaker line embedded INSIDE a multi-line block
-EMBEDDED_SPEAKER_RE = re.compile(
-    rf"(?:^|\n)([A-Z]{_CHAR}+?(?:\s*\[[^\]]*\])?\s*:\s)",
-    re.MULTILINE,
-)
-HEADER_RE   = re.compile(r"DR\.\s*\d+\.\s*\d+\.\s*\d+")
-PAGE_NUM_RE = re.compile(r"^\s*\d{1,3}\s*$")
-
-_NAME_SIGNALS = ('bin ', 'binti ', 'Dato', 'Datuk', 'Tan Sri', 'Tun ', 'Dr. ')
-
-
-def _is_personal_name(text: str) -> bool:
-    return any(s in text for s in _NAME_SIGNALS)
-
-
-def _is_header_only_block(text: str) -> bool:
-    """A block containing only page-number + 'DR.XX.XX.XXXX' header lines."""
-    s = text.strip()
-    if not s:
-        return True
-    if s.startswith('\u25a0'):
-        return True
-    lines = [l.strip() for l in s.split('\n') if l.strip()]
-    for line in lines:
-        if PAGE_NUM_RE.match(line):
-            continue
-        if HEADER_RE.search(line) and len(line) < 30:
-            continue
-        return False
-    return True
-
-
-def _clean_speech_text(text: str) -> str:
-    """Strip page-header noise and tidy whitespace inside speech text."""
-    # Combined headers: "<num>\nDR.XX.XX.XXXX" or reverse
-    text = re.sub(r'\n\s*\d{1,3}\s*\n\s*DR\.\s*\d+\.\s*\d+\.\s*\d+\s*', '\n', text)
-    text = re.sub(r'\n\s*DR\.\s*\d+\.\s*\d+\.\s*\d+\s*\n\s*\d{1,3}\s*', '\n', text)
-    # Any remaining "DR.XX.XX.XXXX" anywhere
-    text = re.sub(r'DR\.\s*\d+\.\s*\d+\.\s*\d+', '', text)
-    # Standalone page numbers on their own line
-    text = re.sub(r'\n\s*\d{1,3}\s*\n', '\n', text)
-    # Whitespace cleanup
-    text = re.sub(r'[ \t]+', ' ', text)
-    text = re.sub(r'\n\s*\n+', '\n', text)
-    return text.strip()
-
-
-def _parse_block(text: str):
-    """Parse a block into {speaker, role, constituency, speech}, or None."""
-    m = SPEAKER_RE.match(text)
-    if m:
-        outer  = m.group(1).replace('\n', ' ').strip()
-        bracket = (m.group(2) or '').replace('\n', ' ').strip()
-        speech  = (m.group(3) or '').strip()
-        if bracket and _is_personal_name(bracket):
-            return dict(speaker=bracket, role=outer, constituency='', speech=speech)
-        return dict(speaker=outer, role='', constituency=bracket, speech=speech)
-
-    m2 = UNCLOSED_RE.match(text)
-    if m2:
-        outer  = m2.group(1).replace('\n', ' ').strip()
-        bracket = m2.group(2).replace('\n', ' ').strip()
-        speech  = (m2.group(3) or '').strip()
-        if _is_personal_name(bracket):
-            return dict(speaker=bracket, role=outer, constituency='', speech=speech)
-        return dict(speaker=outer, role='', constituency=bracket, speech=speech)
-    return None
-
-
-def _split_block_by_speakers(text: str):
-    """
-    Split a multi-line block at points where a new speaker line begins
-    mid-block. Returns [(segment_text, parsed_dict_or_None)] with the
-    first segment always being the original block opening.
-    """
-    matches = [m for m in EMBEDDED_SPEAKER_RE.finditer(text) if m.start() > 0]
-    if not matches:
-        return [(text, None)]
-
-    segments = []
-    last = 0
-    for m in matches:
-        segments.append(text[last:m.start()])
-        new_start = m.start() + 1 if text[m.start()] == '\n' else m.start()
-        last = new_start
-    segments.append(text[last:])
-
-    result = [(segments[0], None)]
-    for seg in segments[1:]:
-        result.append((seg, _parse_block(seg)))
-    return result
-
-
-def process_hansard_pdf(
-    file_bytes: bytes,
-    start_page: int,
-    end_page: int,
-    mp_indexes: Optional[dict] = None,
-    minister_indexes: Optional[dict] = None,
-    cabinet_version: str = '',
-) -> list:
-    transcript: list = []
-    pdf_const_lookup: dict[str, str] = {}
-
-    cur_speaker = cur_role = cur_const = cur_match = cur_portfolio = ''
-    cur_is_minister = cur_is_deputy = cur_cabinet_ver = ''
-    cur_speech: list = []
-    cur_page = 1
-
-    def _flush():
-        if cur_speaker:
-            transcript.append({
-                'Speaker'         : cur_speaker,
-                'Role'            : cur_role,
-                'Portfolio'       : cur_portfolio,
-                'Is_Minister'     : cur_is_minister,
-                'Is_Deputy'       : cur_is_deputy,
-                'Cabinet_Version' : cur_cabinet_ver,
-                'Constituency'    : cur_const,
-                'Roster_Match'    : cur_match,
-                'Speech'          : _clean_speech_text('\n'.join(cur_speech)),
-                'Page'            : cur_page,
-            })
-
-    def _start_new(parsed, page_idx):
-        nonlocal cur_speaker, cur_role, cur_const, cur_match, cur_speech, cur_page
-        nonlocal cur_portfolio, cur_is_minister, cur_is_deputy, cur_cabinet_ver
-        cur_speaker = parsed['speaker']
-        cur_page    = page_idx + 1
-
-        pdf_const = parsed['constituency']
-
-        # ── Minister lookup ────────────────────────────────────────────────
-        min_entry, min_method = lookup_minister(
-            cur_speaker, minister_indexes or {}, cabinet_version
-        )
-        if min_entry:
-            cur_role        = parsed['role'] if parsed['role'] else min_entry['jawatan']
-            cur_portfolio   = min_entry['jawatan']
-            cur_is_minister = 'Yes'
-            cur_is_deputy   = 'Yes' if min_entry.get('is_deputy') else ''
-            cur_cabinet_ver = min_entry.get('cabinet_version', '')
-        else:
-            cur_role        = parsed['role']
-            cur_portfolio   = ''
-            cur_is_minister = ''
-            cur_is_deputy   = ''
-            cur_cabinet_ver = ''
-
-        # ── Constituency resolution ────────────────────────────────────────
-        mp_entry, mp_method = lookup_mp(cur_speaker, mp_indexes or {})
-
-        if pdf_const:
-            cur_const = pdf_const.title()
-            cur_match = (min_method or mp_method) or '—'
-            pdf_const_lookup[cur_speaker] = cur_const
-        elif min_entry and min_entry['constituency']:
-            # Ministers have constituency in the minister Excel
-            cur_const = min_entry['constituency']
-            cur_match = min_method
-        elif mp_entry:
-            cur_const = mp_entry['constituency']
-            cur_match = mp_method
-        else:
-            cur_const = ''
-            cur_match = '—'
-
-        cur_speech = [parsed['speech']] if parsed['speech'] else []
-
-    with fitz.open(stream=file_bytes, filetype='pdf') as doc:
-        start_idx = max(0, start_page - 1)
-        end_idx   = min(len(doc), end_page)
-        cur_page  = start_idx + 1
-
-        for i in range(start_idx, end_idx):
-            for block in doc[i].get_text('dict')['blocks']:
-                # Skip image blocks
-                if block.get('type') != 0:
-                    continue
-
-                # ── Reconstruct text from all spans ─────────────────────────
-                # Keep italic, bold and normal spans — formatting is
-                # cosmetic only and does not indicate content to skip.
-                # Bold = speaker name line; italic = Arabic greeting or [Tepuk];
-                # normal = speech body. All are part of the transcript.
-                all_parts = []
-                has_any_text = False
-                for line in block.get('lines', []):
-                    line_parts = []
-                    for span in line.get('spans', []):
-                        raw_span = span['text']
-                        if not raw_span.strip():
-                            continue
-                        has_any_text = True
-                        line_parts.append(raw_span)
-                    if line_parts:
-                        all_parts.append(''.join(line_parts))
-
-                if not has_any_text:
-                    continue
-
-                text = '\n'.join(all_parts).strip()
-
-                # ── Header-only block filter ─────────────────────────────────
-                if _is_header_only_block(text):
-                    continue
-
-                # ── Indentation filter ───────────────────────────────────────
-                # Body text sits at x0 ≈ 93–110.
-                # Blocks at x0 > 138 are indented stage directions / lists
-                # (e.g. bullet vote counts, ceremony lists, quoted motions).
-                # BUT: if the text starts with a speaker pattern, always parse it —
-                # some rulings and short interjections are indented.
-                block_x0   = block.get('bbox', [0])[0]
-                is_indented = block_x0 > 138
-                looks_like_speaker = bool(SPEAKER_RE.match(text) or UNCLOSED_RE.match(text))
-                if is_indented and not looks_like_speaker:
-                    continue
-
-                segments = _split_block_by_speakers(text)
-
-                for idx, (seg_text, seg_parsed) in enumerate(segments):
-                    if idx == 0:
-                        first_parsed = _parse_block(seg_text)
-                        if first_parsed:
-                            _flush()
-                            _start_new(first_parsed, i)
-                        elif cur_speaker:
-                            cur_speech.append(seg_text.replace('\n', ' '))
-                    else:
-                        _flush()
-                        if seg_parsed:
-                            _start_new(seg_parsed, i)
-
-        _flush()
-
-    # Back-fill constituencies from within-document observations
-    for entry in transcript:
-        if not entry['Constituency'] and entry['Speaker'] in pdf_const_lookup:
-            entry['Constituency'] = pdf_const_lookup[entry['Speaker']]
-            if entry['Roster_Match'] == '—':
-                entry['Roster_Match'] = 'backfill'
-        # Back-fill minister portfolio for entries where minister was seen later
-        if not entry['Portfolio']:
-            min_entry, _ = lookup_minister(
-                entry['Speaker'], minister_indexes or {}, cabinet_version
-            )
-            if min_entry:
-                entry['Portfolio']        = min_entry['jawatan']
-                entry['Is_Minister']      = 'Yes'
-                entry['Is_Deputy']        = 'Yes' if min_entry.get('is_deputy') else ''
-                entry['Cabinet_Version']  = min_entry.get('cabinet_version', '')
-
-    return transcript
-
-
-# ============================================================
-# Normalize Speaker Names
-# ============================================================
-
-# Honorific prefixes stripped from speaker names to produce Normalized_Speaker.
-# Order matters — longest/most-specific first so compound titles match before
-# their shorter components (e.g. 'Datuk Seri' before 'Datuk').
+# Normalized_Speaker: strip leading honorifics from start only
 _NORMALIZE_TITLES = [
     'Yang Berhormat ', 'Yang Amat Berhormat ',
     "Dato' Seri Diraja ", "Dato\u2019 Seri Diraja ",
@@ -794,57 +147,313 @@ _NORMALIZE_TITLES = [
     'Dr. ', 'Ir. ', 'Ts. ',
     'Tuan ', 'Puan ',
     'Haji ', 'Hajjah ', 'Hajah ',
-    'Wira ', 'Indera ',
-    'Panglima ',
+    'Wira ', 'Indera ', 'Panglima ',
 ]
-
-# Speakers whose full name IS a procedural title — leave Normalized_Speaker as-is.
 _TITLE_ONLY_SPEAKERS = {
-    'tuan yang di-pertua',
-    'yang di-pertua',
-    'setiausaha',
-    'beberapa ahli',
-    'seorang ahli',
-    'ahli-ahli',
+    'tuan yang di-pertua', 'yang di-pertua', 'setiausaha',
+    'beberapa ahli', 'seorang ahli', 'ahli-ahli',
 }
 
+def _normalize_speaker(raw: str) -> str:
+    if raw.lower().strip() in _TITLE_ONLY_SPEAKERS:
+        return raw.strip()
+    clean = raw.strip()
+    changed = True
+    while changed:
+        changed = False
+        for title in sorted(_NORMALIZE_TITLES, key=len, reverse=True):
+            if clean.upper().startswith(title.upper()):
+                clean = clean[len(title):].strip()
+                changed = True
+                break
+    return clean if clean else raw.strip()
 
-def normalize_speakers(transcript: list) -> list:
+# ============================================================
+# MP Lookup (constituency only)
+# ============================================================
+@st.cache_data(show_spinner=False)
+def build_mp_lookup(excel_bytes: bytes) -> dict:
+    df = pd.read_excel(io.BytesIO(excel_bytes))
+    name_col  = next(c for c in df.columns if 'NAMA' in c.upper() or 'NAME' in c.upper())
+    const_col = next(c for c in df.columns if 'KAWASAN' in c.upper()
+                                               or 'CONST' in c.upper()
+                                               or 'PARLIMEN' in c.upper())
+    lookup = {}
+    for _, row in df.iterrows():
+        raw   = str(row[name_col]).strip()
+        const = str(row[const_col]).strip().title()
+        key   = _normalise_key(raw)
+        lookup[key] = const
+    return lookup
+
+def lookup_constituency(norm_speaker: str, mp_lookup: dict) -> str:
+    k = _normalise_key(norm_speaker)
+    if k in mp_lookup:
+        return mp_lookup[k]
+    # binti-normalised fallback
+    k_nb = re.sub(r'\bBINTI\b\s*', '', k).strip()
+    for lk, const in mp_lookup.items():
+        if re.sub(r'\bBINTI\b\s*', '', lk).strip() == k_nb and k_nb:
+            return const
+    return ''
+
+# ============================================================
+# Roster loader (for portfolio suggestions)
+# ============================================================
+@st.cache_data(show_spinner=False)
+def load_roster(excel_bytes: bytes) -> pd.DataFrame:
     """
-    Strip leading honorific prefixes from Speaker to produce Normalized_Speaker.
-
-    Strips ONLY from the start of the string — never mid-string — so:
-      'Tuan Ibrahim bin Tuan Man'        → 'Ibrahim bin Tuan Man'   (2nd Tuan kept)
-      'Tuan Sanisvara Nethaji Rayer ...' → 'Sanisvara Nethaji ...'  ('haji' inside untouched)
-      'Puan Hajah Rodziah binti Ismail'  → 'Rodziah binti Ismail'   (stacked titles stripped)
+    Load a minister roster and return a clean DataFrame with columns:
+      Nama, Jawatan, Kementerian, Timbalan, Senator, Kawasan Parlimen
+    Accepts both Format C (Nama/Jawatan/Kementerian) and Format A/B (Kementerian/Menteri/Timbalan).
+    Returns a flat list where each row = one person.
     """
-    for entry in transcript:
-        raw = entry['Speaker']
+    df = pd.read_excel(io.BytesIO(excel_bytes))
+    cols_upper = [c.upper() for c in df.columns]
 
-        if raw.lower().strip() in _TITLE_ONLY_SPEAKERS:
-            entry['Normalized_Speaker'] = raw.strip()
+    rows = []
+
+    # Format C: Nama + Jawatan + Kementerian columns
+    if any('NAMA' in c for c in cols_upper) and any('JAWATAN' in c for c in cols_upper):
+        nama_col       = next(c for c in df.columns if 'NAMA'        in c.upper())
+        jawatan_col    = next(c for c in df.columns if 'JAWATAN'     in c.upper())
+        kementerian_col = next((c for c in df.columns if 'KEMENTERIAN' in c.upper()), None)
+        kawasan_col    = next((c for c in df.columns if 'KAWASAN'    in c.upper()), None)
+        timbalan_col   = next((c for c in df.columns if 'TIMBALAN'   in c.upper()), None)
+        senator_col    = next((c for c in df.columns if 'SENATOR'    in c.upper()), None)
+
+        for _, row in df.iterrows():
+            raw     = str(row[nama_col]).strip()
+            jawatan = str(row[jawatan_col]).strip()
+            if raw in ('', 'nan') or jawatan in ('', 'nan'):
+                continue
+            ministry = str(row.get(kementerian_col, '')).strip() if kementerian_col else jawatan
+            kawasan  = str(row.get(kawasan_col, '')).strip()     if kawasan_col    else ''
+            timbalan = str(row.get(timbalan_col, '')).strip()    if timbalan_col   else ''
+            senator  = str(row.get(senator_col, '')).strip()     if senator_col    else ''
+            is_dep   = jawatan.lower().strip() == 'timbalan menteri'
+            rows.append({
+                'Nama'             : _strip_titles(raw).title(),
+                'Jawatan'          : 'Timbalan Menteri' if is_dep else 'Menteri',
+                'Kementerian'      : ministry,
+                'Timbalan'         : 'Ya' if (timbalan.lower() in ('ya','yes') or is_dep) else '',
+                'Senator'          : 'Ya' if senator.lower() in ('ya','yes') else '',
+                'Kawasan Parlimen' : kawasan.title() if kawasan not in ('', 'nan', '-') else '',
+            })
+
+    # Format A/B: Kementerian | Menteri | Timbalan Menteri
+    else:
+        ministry_col  = df.columns[0]
+        menteri_col   = next((c for c in df.columns if c.strip() == 'Menteri'), None)
+        timbalan_col  = next((c for c in df.columns if 'Timbalan' in c), None)
+
+        for _, row in df.iterrows():
+            ministry = str(row[ministry_col]).strip()
+            if ministry in ('', 'nan'):
+                continue
+            for col, is_dep in [(menteri_col, False), (timbalan_col, True)]:
+                if col is None:
+                    continue
+                raw = str(row.get(col, '')).strip()
+                if raw in ('', 'nan', '-', '\u2014'):
+                    continue
+                raw = re.sub(r'\(.*?\)', '', raw).strip()
+                if not raw:
+                    continue
+                rows.append({
+                    'Nama'             : _strip_titles(raw).title(),
+                    'Jawatan'          : 'Timbalan Menteri' if is_dep else 'Menteri',
+                    'Kementerian'      : ministry,
+                    'Timbalan'         : 'Ya' if is_dep else '',
+                    'Senator'          : 'Ya' if 'SENATOR' in raw.upper() else '',
+                    'Kawasan Parlimen' : '',
+                })
+
+    return pd.DataFrame(rows)
+
+# ============================================================
+# PDF Parsing (extraction only — no portfolio matching)
+# ============================================================
+_CHAR = r"[a-zA-Z\s\(\)@\-\'\u2018\u2019\./]"
+
+SPEAKER_RE = re.compile(
+    rf"^([A-Z]{_CHAR}+?)(?:\s*\[([^\]]*)\])?\s*:\s*(.*)",
+    re.MULTILINE | re.DOTALL,
+)
+UNCLOSED_RE = re.compile(
+    rf"^([A-Z]{_CHAR}+?)\s*\[([A-Z]{_CHAR}+?)\s*:\s*(.*)",
+    re.MULTILINE | re.DOTALL,
+)
+EMBEDDED_SPEAKER_RE = re.compile(
+    rf"(?:^|\n)([A-Z]{_CHAR}+?(?:\s*\[[^\]]*\])?\s*:\s)",
+    re.MULTILINE,
+)
+HEADER_RE   = re.compile(r"DR\.\s*\d+\.\s*\d+\.\s*\d+")
+PAGE_NUM_RE = re.compile(r"^\s*\d{1,3}\s*$")
+_NAME_SIGNALS = ('bin ', 'binti ', 'Dato', 'Datuk', 'Tan Sri', 'Tun ', 'Dr. ')
+
+def _is_personal_name(text: str) -> bool:
+    return any(s in text for s in _NAME_SIGNALS)
+
+def _is_header_only_block(text: str) -> bool:
+    s = text.strip()
+    if not s or s.startswith('\u25a0'):
+        return True
+    lines = [l.strip() for l in s.split('\n') if l.strip()]
+    for line in lines:
+        if PAGE_NUM_RE.match(line):
             continue
+        if HEADER_RE.search(line) and len(line) < 30:
+            continue
+        return False
+    return True
 
-        clean = raw.strip()
+def _clean_speech_text(text: str) -> str:
+    text = re.sub(r'\n\s*\d{1,3}\s*\n\s*DR\.\s*\d+\.\s*\d+\.\s*\d+\s*', '\n', text)
+    text = re.sub(r'\n\s*DR\.\s*\d+\.\s*\d+\.\s*\d+\s*\n\s*\d{1,3}\s*', '\n', text)
+    text = re.sub(r'DR\.\s*\d+\.\s*\d+\.\s*\d+', '', text)
+    text = re.sub(r'\n\s*\d{1,3}\s*\n', '\n', text)
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\n\s*\n+', '\n', text)
+    return text.strip()
 
-        # Iteratively strip the longest matching prefix from the front
-        # until no more prefixes match.
-        changed = True
-        while changed:
-            changed = False
-            for title in sorted(_NORMALIZE_TITLES, key=len, reverse=True):
-                if clean.upper().startswith(title.upper()):
-                    clean = clean[len(title):].strip()
-                    changed = True
-                    break  # restart from longest after each strip
+def _parse_block(text: str):
+    m = SPEAKER_RE.match(text)
+    if m:
+        outer  = m.group(1).replace('\n', ' ').strip()
+        bracket = (m.group(2) or '').replace('\n', ' ').strip()
+        speech  = (m.group(3) or '').strip()
+        if bracket and _is_personal_name(bracket):
+            return dict(speaker=bracket, role=outer, constituency='', speech=speech)
+        return dict(speaker=outer, role='', constituency=bracket, speech=speech)
+    m2 = UNCLOSED_RE.match(text)
+    if m2:
+        outer  = m2.group(1).replace('\n', ' ').strip()
+        bracket = m2.group(2).replace('\n', ' ').strip()
+        speech  = (m2.group(3) or '').strip()
+        if _is_personal_name(bracket):
+            return dict(speaker=bracket, role=outer, constituency='', speech=speech)
+        return dict(speaker=outer, role='', constituency=bracket, speech=speech)
+    return None
 
-        entry['Normalized_Speaker'] = clean if clean else raw.strip()
+def _split_block_by_speakers(text: str):
+    matches = [m for m in EMBEDDED_SPEAKER_RE.finditer(text) if m.start() > 0]
+    if not matches:
+        return [(text, None)]
+    segments = []; last = 0
+    for m in matches:
+        segments.append(text[last:m.start()])
+        new_start = m.start() + 1 if text[m.start()] == '\n' else m.start()
+        last = new_start
+    segments.append(text[last:])
+    result = [(segments[0], None)]
+    for seg in segments[1:]:
+        result.append((seg, _parse_block(seg)))
+    return result
+
+def process_hansard_pdf(file_bytes: bytes, mp_lookup: dict) -> list:
+    """
+    Extract all speaker turns from a Hansard PDF.
+    Returns clean rows with Speaker, Normalized_Speaker, Role, Constituency, Speech, Page.
+    Portfolio assignment happens separately in Step 2.
+    """
+    transcript = []
+    pdf_const_lookup: dict[str, str] = {}
+
+    cur_speaker = cur_role = cur_const = ''
+    cur_speech: list = []
+    cur_page = 1
+
+    def _flush():
+        if cur_speaker:
+            norm = _normalize_speaker(cur_speaker)
+            const = cur_const or pdf_const_lookup.get(cur_speaker, '') \
+                               or lookup_constituency(cur_speaker, mp_lookup)
+            transcript.append({
+                'Speaker'            : cur_speaker,
+                'Normalized_Speaker' : norm,
+                'Role'               : cur_role,
+                'Constituency'       : const,
+                'Speech'             : _clean_speech_text('\n'.join(cur_speech)),
+                'Page'               : cur_page,
+            })
+
+    def _start_new(parsed, page_idx):
+        nonlocal cur_speaker, cur_role, cur_const, cur_speech, cur_page
+        cur_speaker = parsed['speaker']
+        cur_role    = parsed['role']
+        cur_page    = page_idx + 1
+        pdf_const   = parsed.get('constituency', '')
+        if pdf_const:
+            cur_const = pdf_const.title()
+            pdf_const_lookup[cur_speaker] = cur_const
+        else:
+            cur_const = ''
+        cur_speech = [parsed['speech']] if parsed['speech'] else []
+
+    with fitz.open(stream=file_bytes, filetype='pdf') as doc:
+        for i in range(len(doc)):
+            for block in doc[i].get_text('dict')['blocks']:
+                if block.get('type') != 0:
+                    continue
+                # Reconstruct text from all spans (bold, italic, normal)
+                all_parts = []
+                for line in block.get('lines', []):
+                    parts = [s['text'] for s in line.get('spans', []) if s['text'].strip()]
+                    if parts:
+                        all_parts.append(''.join(parts))
+                text = '\n'.join(all_parts).strip()
+                if not text or _is_header_only_block(text):
+                    continue
+
+                for idx, (seg, seg_parsed) in enumerate(_split_block_by_speakers(text)):
+                    p = _parse_block(seg) if idx == 0 else seg_parsed
+                    if p:
+                        _flush()
+                        _start_new(p, i)
+                    elif cur_speaker:
+                        cur_speech.append(seg.replace('\n', ' '))
+        _flush()
+
+    # Back-fill constituency from within-document observations
+    for entry in transcript:
+        if not entry['Constituency'] and entry['Speaker'] in pdf_const_lookup:
+            entry['Constituency'] = pdf_const_lookup[entry['Speaker']]
 
     return transcript
 
+# ============================================================
+# Apply assignments to transcript rows
+# ============================================================
+def apply_assignments(transcript: list, assignments: dict) -> list:
+    """
+    Merge confirmed speaker→portfolio assignments into transcript rows.
+    Keyed on Normalized_Speaker so it's robust across different title variants.
+    """
+    for row in transcript:
+        key = row['Normalized_Speaker']
+        if key in assignments:
+            a = assignments[key]
+            row['Portfolio']    = a.get('portfolio', '')
+            row['Jawatan']      = a.get('jawatan', '')
+            row['Kementerian']  = a.get('kementerian', '')
+            row['Is_Minister']  = 'Yes' if a.get('portfolio') else ''
+            row['Is_Deputy']    = 'Ya' if a.get('jawatan') == 'Timbalan Menteri' else ''
+            row['Senator']      = a.get('senator', '')
+            # Roster constituency overrides only if not already from PDF
+            if not row['Constituency'] and a.get('constituency'):
+                row['Constituency'] = a['constituency']
+        else:
+            row.setdefault('Portfolio',   '')
+            row.setdefault('Jawatan',     '')
+            row.setdefault('Kementerian', '')
+            row.setdefault('Is_Minister', '')
+            row.setdefault('Is_Deputy',   '')
+            row.setdefault('Senator',     '')
+    return transcript
 
 # ============================================================
-# Excel Export
+# Excel export
 # ============================================================
 def dataframe_to_xlsx(df: pd.DataFrame) -> bytes:
     output = io.BytesIO()
@@ -852,250 +461,350 @@ def dataframe_to_xlsx(df: pd.DataFrame) -> bytes:
         df.to_excel(writer, index=False, sheet_name='Transcript')
     return output.getvalue()
 
-
 # ============================================================
 # UI
 # ============================================================
 st.markdown("<h1>Hansard <span>Extractor</span></h1>", unsafe_allow_html=True)
 st.markdown(
-    "<p style='text-align:center;color:var(--text-mute);margin-bottom:1.5rem;'>"
-    "V7 — three-cabinet minister roster (original + two reshuffles)</p>",
+    "<p style='text-align:center;color:#64748b;margin-bottom:1.5rem;'>"
+    "V4 — Extract · Assign · Export</p>",
     unsafe_allow_html=True,
 )
 
+# Sidebar: MP roster only (for constituency)
 with st.sidebar:
-    st.header("MP Roster (optional)")
-    st.caption(
-        "Upload the Dewan Rakyat member list Excel to enrich constituency detection. "
-        "Expected columns: **NAMA PENUH** and **KAWASAN PARLIMEN**."
-    )
-    roster_file = st.file_uploader("Upload MP roster (.xlsx)", type=["xlsx"], key="roster")
+    st.header("MP Roster")
+    st.caption("Upload to auto-fill constituencies. Columns: **NAMA PENUH**, **KAWASAN PARLIMEN**.")
+    roster_file = st.file_uploader("MP roster (.xlsx)", type=["xlsx"], key="mp_roster")
 
-    st.divider()
-
-    st.header("Minister Roster (optional)")
-    st.caption(
-        "Upload any or all three cabinet lists. They are merged automatically — "
-        "each minister is tagged with which cabinet(s) they appear in. "
-        "Expected columns: **Jawatan** | **Nama** | **Kawasan Parlimen** (original) "
-        "or **Kementerian** | **Menteri** | **Timbalan Menteri** (reshuffle lists)."
-    )
-    minister_original_file = st.file_uploader(
-        "📂 Original cabinet — DR 19.12.2022 (.xlsx)",
-        type=["xlsx"], key="ministers_original"
-    )
-    minister_before_file = st.file_uploader(
-        "📂 After first reshuffle (.xlsx)",
-        type=["xlsx"], key="ministers_before"
-    )
-    minister_after_file = st.file_uploader(
-        "📂 After final reshuffle (.xlsx)",
-        type=["xlsx"], key="ministers_after"
-    )
-
-mp_indexes: dict = {}
+mp_lookup: dict = {}
 if roster_file:
-    with st.spinner("Building MP lookup…"):
-        mp_indexes = build_mp_lookup(roster_file.read())
-    st.sidebar.success(f"MP roster loaded — {len(mp_indexes['lookup'])} MPs indexed.")
+    mp_lookup = build_mp_lookup(roster_file.read())
+    st.sidebar.success(f"{len(mp_lookup)} MPs loaded.")
 
-minister_indexes: dict = {}
-if minister_original_file or minister_before_file or minister_after_file:
-    with st.spinner("Building minister lookup…"):
-        minister_indexes = build_minister_lookup(
-            original_bytes=minister_original_file.read() if minister_original_file else None,
-            before_bytes  =minister_before_file.read()   if minister_before_file   else None,
-            after_bytes   =minister_after_file.read()    if minister_after_file    else None,
-        )
-    n_total  = len(minister_indexes['lookup'])
-    versions = []
-    if minister_original_file: versions.append("original")
-    if minister_before_file:   versions.append("first reshuffle")
-    if minister_after_file:    versions.append("final reshuffle")
-    st.sidebar.success(
-        f"Minister roster loaded — {n_total} ministers indexed "
-        f"({', '.join(versions)})."
+# ── Step tabs ─────────────────────────────────────────────────────────────────
+tab1, tab2, tab3 = st.tabs(["① Extract", "② Assign Portfolios", "③ Export"])
+
+# ==============================================================================
+# TAB 1 — EXTRACT
+# ==============================================================================
+with tab1:
+    st.subheader("Upload Hansard PDFs")
+    st.caption("Upload up to 5 PDFs. All pages are processed automatically.")
+
+    uploaded_files = st.file_uploader(
+        "Drag & drop PDFs here",
+        type=["pdf"],
+        accept_multiple_files=True,
+        key="pdf_upload",
     )
 
-uploaded_files = st.file_uploader(
-    "Drag & Drop up to 5 Hansard PDFs",
-    type=["pdf"],
-    accept_multiple_files=True,
-)
+    if uploaded_files:
+        if len(uploaded_files) > 5:
+            st.error("Maximum 5 PDFs allowed.")
+        else:
+            # Show page counts
+            file_infos = []
+            for f in uploaded_files:
+                raw = f.read()
+                with fitz.open(stream=raw, filetype="pdf") as doc:
+                    n_pages = len(doc)
+                file_infos.append({"name": f.name, "stem": f.name.rsplit(".", 1)[0],
+                                    "bytes": raw, "pages": n_pages})
 
-DISPLAY_COLS = [
-    "Speaker", "Normalized_Speaker", "Role", "Portfolio",
-    "Is_Minister", "Is_Deputy", "Cabinet_Version",
-    "Constituency", "Roster_Match",
-    "Speech", "Page", "Document_Name",
-]
-
-if uploaded_files:
-    if len(uploaded_files) > 5:
-        st.error("Maximum 5 Hansard PDFs allowed.")
-    else:
-        # ── Page count info panel ────────────────────────────────────────────
-        st.subheader("Documents")
-        st.caption("All pages will be processed. Page counts are shown for reference.")
-
-        # Read page counts without re-reading bytes later
-        file_infos = []
-        for file in uploaded_files:
-            raw = file.read()
-            with fitz.open(stream=raw, filetype="pdf") as doc:
-                n_pages = len(doc)
-            file_infos.append({
-                "file"    : file,
-                "bytes"   : raw,
-                "name"    : file.name,
-                "stem"    : file.name.rsplit(".", 1)[0],   # filename without .pdf
-                "pages"   : n_pages,
-            })
-
-        # Show a compact info card per file (up to 5 cols)
-        info_cols = st.columns(len(file_infos))
-        for col, fi in zip(info_cols, file_infos):
-            with col:
-                st.metric(
-                    label=fi["name"] if len(fi["name"]) <= 20 else fi["name"][:18] + "…",
-                    value=f"{fi['pages']} pages",
+            cols = st.columns(len(file_infos))
+            for col, fi in zip(cols, file_infos):
+                col.metric(
+                    fi["name"][:20] + "…" if len(fi["name"]) > 20 else fi["name"],
+                    f"{fi['pages']} pages",
                 )
-                fi["cabinet_version"] = st.selectbox(
-                    "Cabinet",
-                    options=[
-                        ("", "— not specified —"),
-                        ("original",         "Original (19 Dec 2022)"),
-                        ("first_reshuffle",  "After first reshuffle"),
-                        ("final_reshuffle",  "After final reshuffle"),
-                    ],
-                    format_func=lambda x: x[1],
-                    key=f"cab_{fi['stem']}",
-                )[0]
 
-        # ── Process ──────────────────────────────────────────────────────────
-        if st.button("🚀 Process All Documents", width="stretch"):
-            with st.spinner("Extracting text, cleaning speech, detecting speakers…"):
-                # per-file dataframes so we can export individually
-                per_file_dfs: dict[str, pd.DataFrame] = {}
-                has_error = False
+            if st.button("🚀 Extract All Documents", width="stretch"):
+                with st.spinner("Extracting…"):
+                    all_rows = []
+                    for fi in file_infos:
+                        rows = process_hansard_pdf(fi["bytes"], mp_lookup)
+                        for r in rows:
+                            r["Document"] = fi["name"]
+                        all_rows.extend(rows)
 
-                for fi in file_infos:
-                    try:
-                        data = process_hansard_pdf(
-                            fi["bytes"], 1, fi["pages"], mp_indexes, minister_indexes,
-                            fi.get("cabinet_version", "")
+                    if not all_rows:
+                        st.warning("No speaker segments found.")
+                    else:
+                        st.session_state["transcript"] = all_rows
+                        df = pd.DataFrame(all_rows)
+                        st.success(
+                            f"Extracted **{len(df)}** speech turns from "
+                            f"**{df['Speaker'].nunique()}** unique speakers."
                         )
-                        for item in data:
-                            item["Document_Name"] = fi["name"]
-                        per_file_dfs[fi["stem"]] = pd.DataFrame(data)
-                    except Exception as ex:
-                        st.error(f"Failed processing {fi['name']}: {ex}")
-                        has_error = True
+
+    # Show extraction results if available
+    if "transcript" in st.session_state:
+        df = pd.DataFrame(st.session_state["transcript"])
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total turns",      len(df))
+        c2.metric("Unique speakers",  df["Speaker"].nunique())
+        c3.metric("With constituency",int((df["Constituency"] != "").sum()))
+
+        with st.expander("Preview extracted turns"):
+            st.dataframe(
+                df[["Speaker", "Normalized_Speaker", "Role", "Constituency", "Speech", "Page", "Document"]],
+                width="stretch", height=380,
+                column_config={
+                    "Speech": st.column_config.TextColumn("Speech", width="large"),
+                },
+            )
+
+# ==============================================================================
+# TAB 2 — ASSIGN PORTFOLIOS
+# ==============================================================================
+with tab2:
+    if "transcript" not in st.session_state:
+        st.info("Complete Step ① first to extract speakers.")
+    else:
+        df_all = pd.DataFrame(st.session_state["transcript"])
+
+        # Load saved assignments
+        if "assignments" not in st.session_state:
+            st.session_state["assignments"] = load_assignments()
+
+        assignments: dict = st.session_state["assignments"]
+
+        # ── Roster upload ──────────────────────────────────────────────────
+        st.subheader("Upload Minister Roster (optional)")
+        st.caption(
+            "Upload any of the three cabinet roster files to auto-suggest portfolios. "
+            "You can change any suggestion manually."
+        )
+        roster_cols = st.columns(3)
+        roster_dfs = []
+        for col, label, key in zip(
+            roster_cols,
+            ["Original (19 Dec 2022)", "After First Reshuffle", "After Final Reshuffle"],
+            ["r_orig", "r_first", "r_final"],
+        ):
+            with col:
+                f = st.file_uploader(label, type=["xlsx"], key=key)
+                if f:
+                    roster_dfs.append(load_roster(f.read()))
+
+        # Combine all uploaded rosters into one suggestion table
+        roster_combined = pd.concat(roster_dfs, ignore_index=True) if roster_dfs else pd.DataFrame()
+
+        # Build portfolio options list from roster
+        portfolio_options: list[str] = [""]
+        if not roster_combined.empty:
+            for _, row in roster_combined.iterrows():
+                label_str = f"{row['Jawatan']} — {row['Kementerian']}"
+                if label_str not in portfolio_options:
+                    portfolio_options.append(label_str)
+
+        # ── Unique speaker table ───────────────────────────────────────────
+        st.subheader("Speaker Assignment Table")
+        st.caption(
+            "Review auto-suggestions and edit as needed. "
+            "Click **Save All Assignments** when done."
+        )
+
+        # Build unique speaker summary
+        speaker_summary = (
+            df_all.groupby(["Normalized_Speaker", "Speaker"])
+            .agg(Turns=("Speech", "count"), Documents=("Document", "nunique"))
+            .reset_index()
+            .sort_values("Turns", ascending=False)
+        )
+
+        # Auto-suggest from roster for unassigned speakers
+        def _suggest(norm_name: str) -> dict:
+            """Find best roster match for a speaker by normalised name."""
+            if roster_combined.empty:
+                return {}
+            # Strip titles from roster names and compare
+            for _, row in roster_combined.iterrows():
+                roster_norm = _normalize_speaker(row["Nama"])
+                if roster_norm.upper() == norm_name.upper():
+                    return {
+                        "portfolio"    : f"{row['Jawatan']} — {row['Kementerian']}",
+                        "jawatan"      : row["Jawatan"],
+                        "kementerian"  : row["Kementerian"],
+                        "senator"      : row.get("Senator", ""),
+                        "constituency" : row.get("Kawasan Parlimen", ""),
+                        "confirmed"    : False,
+                    }
+            return {}
+
+        # Render assignment rows
+        updated_assignments = dict(assignments)
+        rows_html = []
+
+        for _, spk_row in speaker_summary.iterrows():
+            norm  = spk_row["Normalized_Speaker"]
+            raw   = spk_row["Speaker"]
+            turns = spk_row["Turns"]
+
+            current = assignments.get(norm, _suggest(norm))
+            current_portfolio = current.get("portfolio", "")
+            current_confirmed = current.get("confirmed", False)
+
+            col_name, col_turns, col_portfolio, col_confirm = st.columns([3, 1, 5, 1])
+
+            with col_name:
+                st.markdown(f"**{norm}**")
+                st.caption(f"{turns} turn{'s' if turns != 1 else ''}")
+
+            with col_turns:
+                st.markdown("&nbsp;", unsafe_allow_html=True)
+
+            with col_portfolio:
+                # Selectbox with free-text option
+                if current_portfolio and current_portfolio not in portfolio_options:
+                    options = portfolio_options + [current_portfolio]
+                else:
+                    options = portfolio_options
+
+                selected = st.selectbox(
+                    "Portfolio",
+                    options=options,
+                    index=options.index(current_portfolio) if current_portfolio in options else 0,
+                    key=f"sel_{norm}",
+                    label_visibility="collapsed",
+                )
+
+                # Free-text override
+                free_text = st.text_input(
+                    "Or type custom portfolio",
+                    value="" if selected else current_portfolio,
+                    key=f"txt_{norm}",
+                    placeholder="Type if not in list above…",
+                    label_visibility="collapsed",
+                )
+
+                final_portfolio = free_text.strip() if free_text.strip() else selected
+
+            with col_confirm:
+                confirmed = st.checkbox(
+                    "✓", value=current_confirmed, key=f"chk_{norm}"
+                )
+
+            # Resolve jawatan/kementerian from final_portfolio string
+            jawatan = kementerian = senator = constituency = ""
+            if final_portfolio:
+                # Try to find in roster
+                for _, row in roster_combined.iterrows() if not roster_combined.empty else []:
+                    label_str = f"{row['Jawatan']} — {row['Kementerian']}"
+                    if label_str == final_portfolio:
+                        jawatan      = row["Jawatan"]
+                        kementerian  = row["Kementerian"]
+                        senator      = row.get("Senator", "")
+                        constituency = row.get("Kawasan Parlimen", "")
                         break
+                # Parse from string if not matched
+                if not jawatan and " — " in final_portfolio:
+                    parts       = final_portfolio.split(" — ", 1)
+                    jawatan     = parts[0].strip()
+                    kementerian = parts[1].strip()
 
-                if not has_error:
-                    combined_df = pd.concat(per_file_dfs.values(), ignore_index=True)
+            updated_assignments[norm] = {
+                "portfolio"    : final_portfolio,
+                "jawatan"      : jawatan,
+                "kementerian"  : kementerian,
+                "senator"      : senator,
+                "constituency" : constituency,
+                "confirmed"    : confirmed,
+                "speaker_raw"  : raw,
+            }
 
-                    if combined_df.empty:
-                        st.warning(
-                            "No speaker segments found across any of the uploaded PDFs."
+            st.divider()
+
+        # Save button
+        col_save, col_clear = st.columns([2, 1])
+        with col_save:
+            if st.button("💾 Save All Assignments", width="stretch"):
+                st.session_state["assignments"] = updated_assignments
+                save_assignments(updated_assignments)
+                st.success(
+                    f"Saved {sum(1 for a in updated_assignments.values() if a.get('confirmed'))} "
+                    f"confirmed assignments."
+                )
+
+        with col_clear:
+            if st.button("🗑 Clear Saved", width="stretch"):
+                st.session_state["assignments"] = {}
+                if os.path.exists(ASSIGNMENTS_PATH):
+                    os.remove(ASSIGNMENTS_PATH)
+                st.rerun()
+
+# ==============================================================================
+# TAB 3 — EXPORT
+# ==============================================================================
+with tab3:
+    if "transcript" not in st.session_state:
+        st.info("Complete Step ① first.")
+    else:
+        assignments = st.session_state.get("assignments", {})
+        transcript  = st.session_state["transcript"]
+
+        confirmed_count = sum(1 for a in assignments.values() if a.get("confirmed"))
+        st.metric("Confirmed assignments", confirmed_count)
+
+        if st.button("🔗 Apply Assignments & Preview", width="stretch"):
+            enriched = apply_assignments(
+                [dict(r) for r in transcript], assignments
+            )
+            st.session_state["enriched"] = enriched
+
+        if "enriched" in st.session_state:
+            df = pd.DataFrame(st.session_state["enriched"])
+
+            DISPLAY_COLS = [
+                "Speaker", "Normalized_Speaker", "Role",
+                "Portfolio", "Jawatan", "Kementerian",
+                "Is_Minister", "Is_Deputy", "Senator",
+                "Constituency", "Speech", "Page", "Document",
+            ]
+            # Only keep columns that exist
+            display_cols = [c for c in DISPLAY_COLS if c in df.columns]
+
+            st.dataframe(
+                df[display_cols], width="stretch", height=400,
+                column_config={
+                    "Speech": st.column_config.TextColumn("Speech", width="large"),
+                },
+            )
+
+            # Per-document exports
+            st.subheader("Download")
+            docs = df["Document"].unique().tolist()
+
+            if len(docs) == 1:
+                stem = docs[0].rsplit(".", 1)[0]
+                st.download_button(
+                    f"📥 {stem}.xlsx",
+                    data=dataframe_to_xlsx(df[display_cols]),
+                    file_name=f"{stem}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    width="stretch",
+                )
+            else:
+                dl_cols = st.columns(min(len(docs), 3))
+                for col, doc_name in zip(dl_cols * 10, docs):
+                    stem = doc_name.rsplit(".", 1)[0]
+                    sub  = df[df["Document"] == doc_name]
+                    with col:
+                        st.download_button(
+                            f"📥 {stem[:18]}",
+                            data=dataframe_to_xlsx(sub[display_cols]),
+                            file_name=f"{stem}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=f"dl_{stem}",
                         )
-                        st.stop()
 
-                    # Normalize names across the combined set
-                    combined_df = pd.DataFrame(
-                        normalize_speakers(combined_df.to_dict("records"))
-                    )
-                    # Also normalize per-file DFs
-                    for stem, df_file in per_file_dfs.items():
-                        per_file_dfs[stem] = pd.DataFrame(
-                            normalize_speakers(df_file.to_dict("records"))
-                        )
-
-                    # ── Summary metrics (combined) ────────────────────────────
-                    c1, c2, c3, c4, c5, c6 = st.columns(6)
-                    c1.metric("Total segments",    len(combined_df))
-                    c2.metric("Unique speakers",   combined_df["Speaker"].nunique())
-                    c3.metric("Ministers tagged",
-                               int((combined_df["Is_Minister"] == "Yes").sum()))
-                    c4.metric("With constituency",
-                               int((combined_df["Constituency"] != "").sum()))
-                    c5.metric("With role tag",
-                               int((combined_df["Role"] != "").sum()))
-                    c6.metric("Roster-matched",
-                               int((combined_df["Roster_Match"] != "—").sum()))
-
-                    st.success(
-                        f"Processing complete — {len(combined_df)} speech segments "
-                        f"across {len(per_file_dfs)} document(s)."
-                    )
-
-                    # ── Filter ────────────────────────────────────────────────
-                    with st.expander("🔎 Filter results"):
-                        speakers = sorted(combined_df["Speaker"].unique().tolist())
-                        sel_speakers = st.multiselect("Filter by speaker", speakers)
-                        view_df = (
-                            combined_df[combined_df["Speaker"].isin(sel_speakers)]
-                            if sel_speakers else combined_df
-                        )
-
-                    # ── Preview (combined, filtered) ──────────────────────────
-                    st.subheader("Data Preview")
-                    st.dataframe(
-                        view_df[DISPLAY_COLS],
-                        width="stretch",
-                        height=420,
-                        column_config={
-                            "Speech": st.column_config.TextColumn(
-                                "Speech",
-                                width="large",
-                            ),
-                            "Speaker": st.column_config.TextColumn(
-                                "Speaker", width="medium"
-                            ),
-                            "Normalized_Speaker": st.column_config.TextColumn(
-                                "Normalized Speaker", width="medium"
-                            ),
-                            "Role": st.column_config.TextColumn(
-                                "Role", width="medium"
-                            ),
-                            "Portfolio": st.column_config.TextColumn(
-                                "Portfolio", width="medium"
-                            ),
-                            "Kementerian": st.column_config.TextColumn(
-                                "Kementerian", width="medium"
-                            ),
-                        },
-                    )
-
-                    # ── Export ────────────────────────────────────────────────
-                    st.subheader("Export")
-
-                    # Combined JSON (all files together)
-                    st.download_button(
-                        "📥 Download combined JSON (all files)",
-                        data=combined_df[DISPLAY_COLS].to_json(
-                            orient="records", indent=4, force_ascii=False
-                        ),
-                        file_name="hansard_combined.json",
-                        mime="application/json",
-                        width="stretch",
-                    )
-
-                    st.markdown("**Individual XLSX — one per PDF:**")
-
-                    # Up to 5 individual download buttons, named after the PDF
-                    xlsx_cols = st.columns(len(per_file_dfs))
-                    for col, (stem, df_file) in zip(xlsx_cols, per_file_dfs.items()):
-                        with col:
-                            xlsx_name = f"{stem}.xlsx"
-                            st.download_button(
-                                f"📥 {stem[:18]}…" if len(stem) > 18 else f"📥 {stem}",
-                                data=dataframe_to_xlsx(df_file[DISPLAY_COLS]),
-                                file_name=xlsx_name,
-                                mime=(
-                                    "application/vnd.openxmlformats-officedocument"
-                                    ".spreadsheetml.sheet"
-                                ),
-                                key=f"dl_{stem}",
-                            )
+            # Combined JSON
+            st.download_button(
+                "📥 Download combined JSON",
+                data=df[display_cols].to_json(orient="records", indent=2, force_ascii=False),
+                file_name="hansard_combined.json",
+                mime="application/json",
+                width="stretch",
+            )
